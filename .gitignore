@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Home Assistant sensitive/runtime files
+secrets.yaml
+*.db
+*.db-*
+home-assistant.log*
+OZW_Log.txt
+deps/
+tts/
+www/snapshots/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# AppDaemon runtime/log artifacts
+appdaemon.log*
+error.log*
+
+# Local/editor files
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

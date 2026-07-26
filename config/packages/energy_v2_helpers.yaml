@@ -1,0 +1,81 @@
+input_boolean:
+  energy_v2_enabled:
+    name: ENERGY V2 povolen
+    initial: false
+
+  energy_v2_shadow_mode:
+    name: ENERGY V2 shadow režim
+    initial: true
+
+  energy_v2_export_enabled:
+    name: ENERGY V2 export povolen
+    initial: false
+
+  energy_v2_service_mode:
+    name: ENERGY V2 servisní režim
+    initial: false
+
+input_select:
+  energy_v2_requested_mode:
+    name: ENERGY V2 požadovaný režim
+    options:
+      - DISABLED
+      - IDLE
+      - PV_CHARGE_DEYE
+      - EXPORT_DEYE
+      - EXPORT_SOLAX
+      - FAULT
+      - SERVICE
+    initial: DISABLED
+
+  energy_v2_actual_mode:
+    name: ENERGY V2 skutečný režim
+    options:
+      - DISABLED
+      - IDLE
+      - TRANSITION
+      - PV_CHARGE_DEYE
+      - EXPORT_DEYE
+      - EXPORT_SOLAX
+      - FAULT
+      - SERVICE
+    initial: DISABLED
+
+input_number:
+  energy_v2_deye_fv_ledger:
+    name: ENERGY V2 DEYE FV energie k prodeji
+    min: 0
+    max: 100
+    step: 0.01
+    unit_of_measurement: kWh
+    mode: box
+    initial: 0
+
+  energy_v2_solax_fv_ledger:
+    name: ENERGY V2 SolaX FV energie k prodeji
+    min: 0
+    max: 100
+    step: 0.01
+    unit_of_measurement: kWh
+    mode: box
+    initial: 0
+
+input_text:
+  energy_v2_last_fault:
+    name: ENERGY V2 poslední chyba
+    max: 255
+
+  energy_v2_last_decision:
+    name: ENERGY V2 poslední rozhodnutí
+    max: 255
+
+  energy_v2_active_conflicts:
+    name: ENERGY V2 aktivní konflikty
+    max: 255
+
+input_datetime:
+  energy_v2_heartbeat:
+    name: ENERGY V2 heartbeat
+    has_date: true
+    has_time: true
+
