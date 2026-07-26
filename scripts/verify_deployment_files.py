@@ -10,7 +10,11 @@ DEPLOY_APPS = ROOT / "deploy" / "appdaemon" / "apps"
 
 
 def relative_files(root: Path) -> set[Path]:
-    return {path.relative_to(root) for path in root.rglob("*") if path.is_file()}
+    return {
+        path.relative_to(root)
+        for path in root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
 
 
 def main() -> int:
