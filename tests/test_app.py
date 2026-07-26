@@ -123,6 +123,11 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["energy_v2_flow_summary"]: "",
             ENTITY_IDS["energy_v2_flow_warning"]: "",
             ENTITY_IDS["energy_v2_flow_violation"]: "",
+            ENTITY_IDS["energy_v2_instant_grid_export_w"]: "0",
+            ENTITY_IDS["energy_v2_rolling_15min_export_w"]: "0",
+            ENTITY_IDS["energy_v2_export_window_covered_s"]: "0",
+            ENTITY_IDS["energy_v2_export_limit_state"]: "UNKNOWN",
+            ENTITY_IDS["energy_v2_export_limit_summary"]: "",
             ENTITY_IDS["energy_v2_deye_fv_ledger"]: "1",
             ENTITY_IDS["energy_v2_solax_fv_ledger"]: "0",
         }
@@ -339,6 +344,64 @@ def test_unimplemented_strategy_stays_passive_and_disables_recommendation() -> N
     assert helper_value(app, "energy_v2_requested_mode") == "DISABLED"
     assert helper_value(app, "energy_v2_actual_mode") == "DISABLED"
     assert "not implemented" in helper_value(app, "energy_v2_last_decision")
+
+
+def test_instant_export_above_legal_limit_does_not_fault_when_average_is_safe() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
+    app.states[ENTITY_IDS["deye_grid_power"]] = "-11000"
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert helper_value(app, "energy_v2_requested_mode") == "DISABLED"
+    assert helper_value(app, "energy_v2_actual_mode") == "DISABLED"
+    assert helper_value(app, "energy_v2_export_limit_state") == "EXPORT_INSTANT_ABOVE_TARGET"
+    assert "Flow violation detected" not in helper_value(app, "energy_v2_last_decision")
+
+
+def test_system_parameters_load_from_appdaemon_args() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.args = {
+        "solax_rated_power_w": 12_500.0,
+        "deye_battery_capacity_kwh": 31.5,
+        "target_export_limit_w": 9_700.0,
+        "legal_export_average_limit_w": 9_900.0,
+        "export_average_window_s": 600.0,
+    }
+    app.states = valid_states()
+    app.initialize()
+
+    assert app.system_parameters.solax_rated_power_w == 12_500.0
+    assert app.system_parameters.deye_battery_capacity_kwh == 31.5
+    assert app.system_parameters.target_export_limit_w == 9_700.0
+    assert app.system_parameters.legal_export_average_limit_w == 9_900.0
+    assert app.export_average_tracker.window_s == 600.0
+
+
+def test_no_physical_service_paths_are_added_by_phase_2() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["deye_grid_power"]] = "-11000"
+    app.initialize()
+
+    app._shadow_tick()
+
+    service_names = {service for service, _kwargs in app.services}
+    assert service_names <= {
+        "input_select/select_option",
+        "input_text/set_value",
+        "input_datetime/set_datetime",
+        "input_boolean/turn_on",
+        "input_boolean/turn_off",
+        "input_number/set_value",
+    }
+    assert all("solax" not in kwargs["entity_id"] for _service, kwargs in app.services)
+    assert all("deye_" not in kwargs["entity_id"] for _service, kwargs in app.services)
 
 
 def test_invalid_required_safety_telemetry_reports_specific_error() -> None:

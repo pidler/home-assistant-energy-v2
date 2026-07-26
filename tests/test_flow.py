@@ -6,7 +6,11 @@ from apps.energy_v2.flow import (
     FlowDebouncer,
     FlowSnapshot,
     FlowThresholds,
+    RollingExportAverage,
+    RollingExportAverageTracker,
     SignConventions,
+    SystemParameters,
+    assess_export_limit,
     assess_flow_snapshot,
     derive_flow_snapshot,
     deye_battery_charging_power_w,
@@ -17,7 +21,7 @@ from apps.energy_v2.flow import (
     solax_battery_discharging_power_w,
     summarize_flow,
 )
-from apps.energy_v2.models import FlowState
+from apps.energy_v2.models import ExportLimitState, FlowState
 from tests.test_planner import snapshot
 
 
@@ -155,3 +159,147 @@ def test_diagnostic_summary_is_limited() -> None:
         max_len=80,
     )
     assert len(text) == 80
+
+
+def test_constant_export_9000_w_for_15_minutes_is_within_target() -> None:
+    tracker = RollingExportAverageTracker()
+    start = datetime(2026, 7, 27, 12, 0, 0)
+    tracker.add_sample(start, 9000.0)
+    average = tracker.add_sample(start + timedelta(seconds=900), 9000.0)
+    assessment = assess_export_limit(9000.0, average)
+
+    assert average.average_w == 9000.0
+    assert average.window_complete
+    assert assessment.state is ExportLimitState.EXPORT_WITHIN_TARGET
+    assert not assessment.violations
+
+
+def test_constant_export_9800_w_for_15_minutes_is_near_limit_warning() -> None:
+    tracker = RollingExportAverageTracker()
+    start = datetime(2026, 7, 27, 12, 0, 0)
+    tracker.add_sample(start, 9800.0)
+    average = tracker.add_sample(start + timedelta(seconds=900), 9800.0)
+    assessment = assess_export_limit(9800.0, average)
+
+    assert average.average_w == 9800.0
+    assert assessment.state is ExportLimitState.EXPORT_AVERAGE_NEAR_LIMIT
+    assert assessment.warnings
+    assert not assessment.violations
+
+
+def test_constant_export_10000_w_for_15_minutes_is_near_limit_not_violation() -> None:
+    tracker = RollingExportAverageTracker()
+    start = datetime(2026, 7, 27, 12, 0, 0)
+    tracker.add_sample(start, 10000.0)
+    average = tracker.add_sample(start + timedelta(seconds=900), 10000.0)
+    assessment = assess_export_limit(10000.0, average)
+
+    assert average.average_w == 10000.0
+    assert assessment.state is ExportLimitState.EXPORT_AVERAGE_NEAR_LIMIT
+    assert not assessment.violations
+
+
+def test_constant_export_above_10000_w_for_15_minutes_is_violation() -> None:
+    tracker = RollingExportAverageTracker()
+    start = datetime(2026, 7, 27, 12, 0, 0)
+    tracker.add_sample(start, 10050.0)
+    average = tracker.add_sample(start + timedelta(seconds=900), 10050.0)
+    assessment = assess_export_limit(10050.0, average)
+
+    assert assessment.state is ExportLimitState.EXPORT_AVERAGE_LIMIT_VIOLATION
+    assert assessment.violations
+
+
+def test_short_spike_above_10000_w_does_not_violate_average_limit() -> None:
+    tracker = RollingExportAverageTracker()
+    start = datetime(2026, 7, 27, 12, 0, 0)
+    tracker.add_sample(start, 9000.0)
+    tracker.add_sample(start + timedelta(seconds=840), 11000.0)
+    average = tracker.add_sample(start + timedelta(seconds=900), 9000.0)
+    assessment = assess_export_limit(11000.0, average)
+
+    assert round(average.average_w, 3) == round(((9000.0 * 840.0) + (11000.0 * 60.0)) / 900.0, 3)
+    assert average.average_w < 10000.0
+    assert assessment.state is ExportLimitState.EXPORT_INSTANT_ABOVE_TARGET
+    assert not assessment.violations
+
+
+def test_irregular_sample_intervals_are_time_weighted() -> None:
+    tracker = RollingExportAverageTracker(window_s=300.0)
+    start = datetime(2026, 7, 27, 12, 0, 0)
+    tracker.add_sample(start, 1000.0)
+    tracker.add_sample(start + timedelta(seconds=60), 7000.0)
+    average = tracker.add_sample(start + timedelta(seconds=300), 7000.0)
+
+    assert average.average_w == ((1000.0 * 60.0) + (7000.0 * 240.0)) / 300.0
+
+
+def test_old_samples_are_removed_from_sliding_window() -> None:
+    tracker = RollingExportAverageTracker(window_s=300.0)
+    start = datetime(2026, 7, 27, 12, 0, 0)
+    tracker.add_sample(start, 11000.0)
+    tracker.add_sample(start + timedelta(seconds=300), 1000.0)
+    average = tracker.add_sample(start + timedelta(seconds=600), 1000.0)
+
+    assert average.average_w == 1000.0
+    assert len(tracker.samples) == 2
+
+
+def test_restart_incomplete_window_is_partial_not_definitive() -> None:
+    tracker = RollingExportAverageTracker()
+    start = datetime(2026, 7, 27, 12, 0, 0)
+    tracker.add_sample(start, 9800.0)
+    average = tracker.add_sample(start + timedelta(seconds=60), 9800.0)
+    assessment = assess_export_limit(9800.0, average)
+
+    assert average.covered_duration_s == 60.0
+    assert not average.window_complete
+    assert any("partial" in warning for warning in assessment.warnings)
+
+
+def test_missing_samples_are_unknown_not_safe() -> None:
+    average = RollingExportAverageTracker().average(datetime(2026, 7, 27, 12, 0, 0))
+    assessment = assess_export_limit(0.0, average)
+
+    assert average.stale
+    assert assessment.state is ExportLimitState.UNKNOWN
+    assert assessment.warnings
+
+
+def test_stale_telemetry_is_unknown_not_safe() -> None:
+    tracker = RollingExportAverageTracker(max_sample_age_s=10.0)
+    start = datetime(2026, 7, 27, 12, 0, 0)
+    tracker.add_sample(start, 9000.0)
+    average = tracker.average(start + timedelta(seconds=11))
+    assessment = assess_export_limit(9000.0, average)
+
+    assert average.stale
+    assert assessment.state is ExportLimitState.UNKNOWN
+
+
+def test_exact_average_limit_crossing_uses_greater_than_10000() -> None:
+    at_limit = assess_export_limit(
+        10000.0,
+        RollingExportAverage(average_w=10000.0, covered_duration_s=900.0, window_complete=True),
+    )
+    above_limit = assess_export_limit(
+        10001.0,
+        RollingExportAverage(average_w=10000.1, covered_duration_s=900.0, window_complete=True),
+    )
+
+    assert at_limit.state is not ExportLimitState.EXPORT_AVERAGE_LIMIT_VIOLATION
+    assert above_limit.state is ExportLimitState.EXPORT_AVERAGE_LIMIT_VIOLATION
+
+
+def test_system_parameter_defaults_are_confirmed_values() -> None:
+    params = SystemParameters()
+
+    assert params.solax_rated_power_w == 12_000.0
+    assert params.solax_battery_capacity_kwh == 24.0
+    assert params.solax_min_soc_pct == 10.0
+    assert params.deye_rated_power_w == 12_000.0
+    assert params.deye_battery_capacity_kwh == 32.0
+    assert params.deye_min_soc_pct == 10.0
+    assert params.target_export_limit_w == 9_800.0
+    assert params.legal_export_average_limit_w == 10_000.0
+    assert params.export_average_window_s == 900.0
