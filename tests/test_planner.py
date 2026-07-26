@@ -88,4 +88,3 @@ def test_grid_charging_enabled_blocks_pv_charge() -> None:
 def test_normal_idle() -> None:
     idle_snapshot = snapshot(solax_pv_power_w=1000.0, solax_house_load_w=800.0)
     assert decide(snapshot=idle_snapshot).mode is Mode.IDLE
-

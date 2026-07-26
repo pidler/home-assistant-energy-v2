@@ -50,4 +50,3 @@ def safe_to_enable(
     if active_conflicts:
         reasons.append("Conflicting automations are active: " + ", ".join(active_conflicts))
     return ValidationResult(valid=not reasons, reasons=tuple(reasons))
-

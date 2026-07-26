@@ -23,18 +23,14 @@ class EnergyV2App(hass.Hass):
         self.log_prefix = "ENERGY_V2"
         self.entity_ids = dict(ENTITY_IDS)
         self.entity_ids.update(self.args.get("entity_ids", {}))
-        self.entity_ids["energy_v2_enabled"] = self.args.get(
-            "enabled_entity", self.entity_ids["energy_v2_enabled"]
-        )
+        self.entity_ids["energy_v2_enabled"] = self.args.get("enabled_entity", self.entity_ids["energy_v2_enabled"])
         self.entity_ids["energy_v2_shadow_mode"] = self.args.get(
             "shadow_mode_entity", self.entity_ids["energy_v2_shadow_mode"]
         )
         self.entity_ids["energy_v2_export_enabled"] = self.args.get(
             "export_enabled_entity", self.entity_ids["energy_v2_export_enabled"]
         )
-        self.conflicting_automations = tuple(
-            self.args.get("conflicting_automations", DEFAULT_CONFLICTING_AUTOMATIONS)
-        )
+        self.conflicting_automations = tuple(self.args.get("conflicting_automations", DEFAULT_CONFLICTING_AUTOMATIONS))
         self.telemetry = TelemetryReader(self, self.entity_ids)
         self._debounce_handle: Any | None = None
         self._last_decision: PlannerDecision | None = None
@@ -96,10 +92,7 @@ class EnergyV2App(hass.Hass):
         try:
             snapshot = self.telemetry.snapshot()
             telemetry_validation = validate_telemetry(snapshot)
-            conflict_states = {
-                entity_id: str(self.get_state(entity_id))
-                for entity_id in self.conflicting_automations
-            }
+            conflict_states = {entity_id: str(self.get_state(entity_id)) for entity_id in self.conflicting_automations}
             active_conflicts = find_active_conflicts(conflict_states, self.conflicting_automations)
             legacy_enabled = parse_bool_state(self.get_state(self.entity_ids["legacy_enabled"])) is True
             current_enabled = (

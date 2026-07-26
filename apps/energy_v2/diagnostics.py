@@ -25,4 +25,3 @@ def heartbeat_value() -> str:
 
 def mode_value(mode: Mode) -> str:
     return mode.value
-

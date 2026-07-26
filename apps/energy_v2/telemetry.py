@@ -10,8 +10,7 @@ INVALID_STATES = {"unknown", "unavailable", "", "none", "null"}
 
 
 class StateReader(Protocol):
-    def get_state(self, entity_id: str, **kwargs: Any) -> Any:
-        ...
+    def get_state(self, entity_id: str, **kwargs: Any) -> Any: ...
 
 
 def parse_float_state(value: object) -> float | None:
@@ -102,4 +101,3 @@ class TelemetryReader:
         )
         self.last_errors = tuple(errors)
         return snap
-

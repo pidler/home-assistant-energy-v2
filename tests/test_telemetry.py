@@ -30,4 +30,3 @@ def test_parse_float_negative_power() -> None:
 def test_parse_bool_on_off() -> None:
     assert parse_bool_state("on") is True
     assert parse_bool_state("off") is False
-

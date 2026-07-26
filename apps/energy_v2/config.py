@@ -69,4 +69,3 @@ DEFAULT_CONFLICTING_AUTOMATIONS: tuple[str, ...] = (
     "automation.vypne_vybijeni_deye_a_zapne_self_use_mod_na_solaxu",
     "automation.zpnout_nabijeni_deye_v_ucity_cas",
 )
-

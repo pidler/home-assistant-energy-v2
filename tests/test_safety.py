@@ -84,4 +84,3 @@ def test_safe_to_enable_blocks_active_conflict() -> None:
     )
     assert not result.valid
     assert any("Conflicting" in reason for reason in result.reasons)
-
