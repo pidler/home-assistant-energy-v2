@@ -3,7 +3,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from .models import FlowState, TelemetrySnapshot
+from .models import ExportLimitState, FlowState, TelemetrySnapshot
+
+
+@dataclass(frozen=True)
+class SystemParameters:
+    solax_rated_power_w: float = 12_000.0
+    solax_battery_capacity_kwh: float = 24.0
+    solax_min_soc_pct: float = 10.0
+    deye_rated_power_w: float = 12_000.0
+    deye_battery_capacity_kwh: float = 32.0
+    deye_min_soc_pct: float = 10.0
+    target_export_limit_w: float = 9_800.0
+    legal_export_average_limit_w: float = 10_000.0
+    export_average_warning_w: float = 9_800.0
+    export_average_window_s: float = 900.0
+    export_sample_max_age_s: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -44,6 +59,78 @@ class FlowAssessment:
     warnings: tuple[str, ...] = ()
     violations: tuple[str, ...] = ()
     transients: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RollingExportAverage:
+    average_w: float
+    covered_duration_s: float
+    window_complete: bool
+    stale: bool = False
+
+
+@dataclass(frozen=True)
+class ExportLimitAssessment:
+    state: ExportLimitState
+    instant_export_w: float
+    rolling_average: RollingExportAverage
+    warnings: tuple[str, ...] = ()
+    violations: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExportSample:
+    timestamp: datetime
+    export_w: float
+
+
+@dataclass
+class RollingExportAverageTracker:
+    window_s: float = 900.0
+    max_sample_age_s: float = 120.0
+    samples: list[ExportSample] = field(default_factory=list)
+
+    def add_sample(self, now: datetime, export_w: float) -> RollingExportAverage:
+        self.samples.append(ExportSample(now, max(export_w, 0.0)))
+        self._drop_samples_before(now - timedelta(seconds=self.window_s))
+        return self.average(now)
+
+    def average(self, now: datetime) -> RollingExportAverage:
+        if not self.samples:
+            return RollingExportAverage(0.0, 0.0, False, stale=True)
+        last_sample_age_s = max((now - self.samples[-1].timestamp).total_seconds(), 0.0)
+        stale = last_sample_age_s > self.max_sample_age_s
+        window_start = now - timedelta(seconds=self.window_s)
+        first_timestamp = max(self.samples[0].timestamp, window_start)
+        covered_duration_s = max((now - first_timestamp).total_seconds(), 0.0)
+        if covered_duration_s <= 0:
+            return RollingExportAverage(0.0, 0.0, False, stale=stale)
+
+        energy_ws = 0.0
+        relevant_samples = [sample for sample in self.samples if sample.timestamp >= window_start]
+        previous_samples = [sample for sample in self.samples if sample.timestamp < window_start]
+        if previous_samples:
+            relevant_samples.insert(0, ExportSample(window_start, previous_samples[-1].export_w))
+
+        for index, sample in enumerate(relevant_samples):
+            segment_start = max(sample.timestamp, window_start)
+            if index + 1 < len(relevant_samples):
+                segment_end = min(relevant_samples[index + 1].timestamp, now)
+            else:
+                segment_end = now
+            duration_s = max((segment_end - segment_start).total_seconds(), 0.0)
+            energy_ws += sample.export_w * duration_s
+
+        return RollingExportAverage(
+            average_w=energy_ws / covered_duration_s,
+            covered_duration_s=covered_duration_s,
+            window_complete=covered_duration_s >= self.window_s,
+            stale=stale,
+        )
+
+    def _drop_samples_before(self, cutoff: datetime) -> None:
+        while len(self.samples) > 1 and self.samples[1].timestamp <= cutoff:
+            self.samples.pop(0)
 
 
 @dataclass
@@ -229,6 +316,95 @@ def summarize_flow(snapshot: FlowSnapshot, assessment: FlowAssessment, max_len: 
         f"{snapshot.solax_battery_discharging_w:.0f} W, "
         f"DEYE batt charge/discharge {snapshot.deye_battery_charging_w:.0f}/"
         f"{snapshot.deye_battery_discharging_w:.0f} W, PV/load {snapshot.pv_power_w:.0f}/{snapshot.house_load_w:.0f} W"
+    )
+    return text[:max_len]
+
+
+def assess_export_limit(
+    instant_grid_export_w: float,
+    rolling_average: RollingExportAverage,
+    parameters: SystemParameters | None = None,
+) -> ExportLimitAssessment:
+    parameters = parameters or SystemParameters()
+    instant_grid_export_w = max(instant_grid_export_w, 0.0)
+    if rolling_average.stale:
+        return ExportLimitAssessment(
+            ExportLimitState.UNKNOWN,
+            instant_grid_export_w,
+            rolling_average,
+            warnings=("Export telemetry is missing or stale",),
+        )
+
+    warnings: list[str] = []
+    violations: list[str] = []
+    if not rolling_average.window_complete:
+        warnings.append(
+            f"Export average is partial: {rolling_average.covered_duration_s:.0f}/"
+            f"{parameters.export_average_window_s:.0f} s"
+        )
+
+    if rolling_average.average_w > parameters.legal_export_average_limit_w:
+        violations.append(
+            f"15-minute average export exceeds limit: {rolling_average.average_w:.0f} W "
+            f"> {parameters.legal_export_average_limit_w:.0f} W"
+        )
+        return ExportLimitAssessment(
+            ExportLimitState.EXPORT_AVERAGE_LIMIT_VIOLATION,
+            instant_grid_export_w,
+            rolling_average,
+            tuple(warnings),
+            tuple(violations),
+        )
+
+    if rolling_average.average_w >= parameters.export_average_warning_w:
+        warnings.append(f"15-minute average export near limit: {rolling_average.average_w:.0f} W")
+        return ExportLimitAssessment(
+            ExportLimitState.EXPORT_AVERAGE_NEAR_LIMIT,
+            instant_grid_export_w,
+            rolling_average,
+            tuple(warnings),
+        )
+
+    if instant_grid_export_w > parameters.target_export_limit_w:
+        warnings.append(
+            f"Instant export above operational target: {instant_grid_export_w:.0f} W "
+            f"> {parameters.target_export_limit_w:.0f} W"
+        )
+        return ExportLimitAssessment(
+            ExportLimitState.EXPORT_INSTANT_ABOVE_TARGET,
+            instant_grid_export_w,
+            rolling_average,
+            tuple(warnings),
+        )
+
+    return ExportLimitAssessment(
+        ExportLimitState.EXPORT_WITHIN_TARGET,
+        instant_grid_export_w,
+        rolling_average,
+        tuple(warnings),
+    )
+
+
+def merge_export_limit_assessment(
+    flow_assessment: FlowAssessment,
+    export_assessment: ExportLimitAssessment,
+) -> FlowAssessment:
+    return FlowAssessment(
+        state=flow_assessment.state,
+        warnings=tuple(dict.fromkeys(flow_assessment.warnings + export_assessment.warnings)),
+        violations=tuple(dict.fromkeys(flow_assessment.violations + export_assessment.violations)),
+        transients=flow_assessment.transients,
+    )
+
+
+def summarize_export_limit(assessment: ExportLimitAssessment, max_len: int = 255) -> str:
+    rolling = assessment.rolling_average
+    complete = "complete" if rolling.window_complete else "partial"
+    stale = ", stale" if rolling.stale else ""
+    text = (
+        f"{assessment.state.value}: instant={assessment.instant_export_w:.0f} W, "
+        f"avg15={rolling.average_w:.0f} W, covered={rolling.covered_duration_s:.0f} s "
+        f"({complete}{stale})"
     )
     return text[:max_len]
 

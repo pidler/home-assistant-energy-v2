@@ -23,12 +23,18 @@ from .diagnostics import (
     mode_value,
 )
 from .flow import (
+    ExportLimitAssessment,
     FlowAssessment,
     FlowDebouncer,
     FlowSnapshot,
     FlowState,
+    RollingExportAverageTracker,
     SignConventions,
+    SystemParameters,
+    assess_export_limit,
     derive_flow_snapshot,
+    merge_export_limit_assessment,
+    summarize_export_limit,
     summarize_flow,
 )
 from .models import AppStatus, Mode, PlannerDecision, Strategy, ValidationResult
@@ -61,7 +67,12 @@ class EnergyV2App(hass.Hass):
             deye_battery_discharging_positive=bool(self.args.get("deye_battery_discharging_positive", True)),
             deye_grid_import_positive=bool(self.args.get("deye_grid_import_positive", True)),
         )
+        self.system_parameters = self._system_parameters_from_args()
         self.flow_debouncer = FlowDebouncer()
+        self.export_average_tracker = RollingExportAverageTracker(
+            window_s=self.system_parameters.export_average_window_s,
+            max_sample_age_s=self.system_parameters.export_sample_max_age_s,
+        )
         self._debounce_handle: Any | None = None
         self._last_decision: PlannerDecision | None = None
         self._last_conflicts: tuple[str, ...] = ()
@@ -136,11 +147,23 @@ class EnergyV2App(hass.Hass):
 
             if telemetry_validation.valid:
                 flow_snapshot = derive_flow_snapshot(snapshot, self.sign_conventions)
-                flow_assessment = self.flow_debouncer.assess(flow_snapshot, datetime.now().astimezone())
+                now = datetime.now().astimezone()
+                rolling_export = self.export_average_tracker.add_sample(now, flow_snapshot.grid_export_w)
+                export_limit_assessment = assess_export_limit(
+                    flow_snapshot.grid_export_w,
+                    rolling_export,
+                    self.system_parameters,
+                )
+                flow_assessment = merge_export_limit_assessment(
+                    self.flow_debouncer.assess(flow_snapshot, now),
+                    export_limit_assessment,
+                )
                 self._publish_flow_diagnostics(flow_snapshot, flow_assessment)
+                self._publish_export_limit_diagnostics(export_limit_assessment)
             else:
                 flow_assessment = FlowAssessment(FlowState.UNKNOWN, warnings=("Telemetry is not valid",))
                 self._publish_invalid_flow_diagnostics(flow_assessment)
+                self._publish_unknown_export_limit_diagnostics()
 
             enable_validation = safe_to_enable(
                 telemetry_validation,
@@ -163,9 +186,9 @@ class EnergyV2App(hass.Hass):
                     or 0.0,
                     solax_ledger_kwh=parse_float_state(self.get_state(self.entity_ids["energy_v2_solax_fv_ledger"]))
                     or 0.0,
-                    deye_min_soc_pct=float(self.args.get("deye_min_soc_pct", 15.0)),
+                    deye_min_soc_pct=self.system_parameters.deye_min_soc_pct,
                     deye_max_soc_pct=float(self.args.get("deye_max_soc_pct", 90.0)),
-                    solax_min_soc_pct=float(self.args.get("solax_min_soc_pct", 30.0)),
+                    solax_min_soc_pct=self.system_parameters.solax_min_soc_pct,
                     solax_pv_charge_start_soc_pct=float(self.args.get("solax_pv_charge_start_soc_pct", 95.0)),
                     pv_reserve_w=float(self.args.get("pv_reserve_w", 1000.0)),
                     minimum_sell_price=float(self.args.get("minimum_sell_price", 3.0)),
@@ -262,6 +285,12 @@ class EnergyV2App(hass.Hass):
             self.call_service("input_text/set_value", entity_id=entity_id, value=value[:255])
         elif domain == "input_datetime":
             self.call_service("input_datetime/set_datetime", entity_id=entity_id, datetime=value)
+        elif domain == "input_number" and key in {
+            "energy_v2_instant_grid_export_w",
+            "energy_v2_rolling_15min_export_w",
+            "energy_v2_export_window_covered_s",
+        }:
+            self.call_service("input_number/set_value", entity_id=entity_id, value=float(value))
         elif domain == "input_boolean" and key == "energy_v2_safe_to_enable":
             service = "input_boolean/turn_on" if value == "on" else "input_boolean/turn_off"
             self.call_service(service, entity_id=entity_id)
@@ -292,6 +321,34 @@ class EnergyV2App(hass.Hass):
         self._set_helper("energy_v2_flow_summary", "UNKNOWN: telemetry is not valid")
         self._set_helper("energy_v2_flow_warning", compact_reasons(assessment.warnings))
         self._set_helper("energy_v2_flow_violation", "")
+
+    def _publish_export_limit_diagnostics(self, assessment: ExportLimitAssessment) -> None:
+        self._set_helper("energy_v2_instant_grid_export_w", f"{assessment.instant_export_w:.3f}")
+        self._set_helper("energy_v2_rolling_15min_export_w", f"{assessment.rolling_average.average_w:.3f}")
+        self._set_helper("energy_v2_export_window_covered_s", f"{assessment.rolling_average.covered_duration_s:.3f}")
+        self._set_helper("energy_v2_export_limit_state", assessment.state.value)
+        self._set_helper("energy_v2_export_limit_summary", summarize_export_limit(assessment))
+        if assessment.violations:
+            self._set_helper("energy_v2_last_export_average_violation", heartbeat_value())
+
+    def _publish_unknown_export_limit_diagnostics(self) -> None:
+        self._set_helper("energy_v2_export_limit_state", "UNKNOWN")
+        self._set_helper("energy_v2_export_limit_summary", "UNKNOWN: telemetry is not valid")
+
+    def _system_parameters_from_args(self) -> SystemParameters:
+        return SystemParameters(
+            solax_rated_power_w=float(self.args.get("solax_rated_power_w", 12_000.0)),
+            solax_battery_capacity_kwh=float(self.args.get("solax_battery_capacity_kwh", 24.0)),
+            solax_min_soc_pct=float(self.args.get("solax_min_soc_pct", 10.0)),
+            deye_rated_power_w=float(self.args.get("deye_rated_power_w", 12_000.0)),
+            deye_battery_capacity_kwh=float(self.args.get("deye_battery_capacity_kwh", 32.0)),
+            deye_min_soc_pct=float(self.args.get("deye_min_soc_pct", 10.0)),
+            target_export_limit_w=float(self.args.get("target_export_limit_w", 9_800.0)),
+            legal_export_average_limit_w=float(self.args.get("legal_export_average_limit_w", 10_000.0)),
+            export_average_warning_w=float(self.args.get("export_average_warning_w", 9_800.0)),
+            export_average_window_s=float(self.args.get("export_average_window_s", 900.0)),
+            export_sample_max_age_s=float(self.args.get("export_sample_max_age_s", 120.0)),
+        )
 
     def _refresh_energy_v2_helper_existence(self) -> None:
         helper_entity_ids = tuple(self.entity_ids[key] for key in ENERGY_V2_HELPER_KEYS)

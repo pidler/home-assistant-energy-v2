@@ -76,6 +76,16 @@ input_select:
       - AMBIGUOUS
     initial: UNKNOWN
 
+  energy_v2_export_limit_state:
+    name: ENERGY V2 stav exportniho limitu
+    options:
+      - UNKNOWN
+      - EXPORT_WITHIN_TARGET
+      - EXPORT_INSTANT_ABOVE_TARGET
+      - EXPORT_AVERAGE_NEAR_LIMIT
+      - EXPORT_AVERAGE_LIMIT_VIOLATION
+    initial: UNKNOWN
+
 input_number:
   energy_v2_deye_fv_ledger:
     name: ENERGY V2 DEYE FV energie k prodeji
@@ -92,6 +102,33 @@ input_number:
     max: 100
     step: 0.01
     unit_of_measurement: kWh
+    mode: box
+    initial: 0
+
+  energy_v2_instant_grid_export_w:
+    name: ENERGY V2 okamzity export do site
+    min: 0
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    mode: box
+    initial: 0
+
+  energy_v2_rolling_15min_export_w:
+    name: ENERGY V2 prumerny export 15 min
+    min: 0
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    mode: box
+    initial: 0
+
+  energy_v2_export_window_covered_s:
+    name: ENERGY V2 pokryti exportniho okna
+    min: 0
+    max: 900
+    step: 1
+    unit_of_measurement: s
     mode: box
     initial: 0
 
@@ -124,6 +161,10 @@ input_text:
     name: ENERGY V2 poruseni toku
     max: 255
 
+  energy_v2_export_limit_summary:
+    name: ENERGY V2 souhrn exportniho limitu
+    max: 255
+
 input_datetime:
   energy_v2_heartbeat:
     name: ENERGY V2 heartbeat
@@ -137,5 +178,10 @@ input_datetime:
 
   energy_v2_last_flow_violation:
     name: ENERGY V2 posledni poruseni toku
+    has_date: true
+    has_time: true
+
+  energy_v2_last_export_average_violation:
+    name: ENERGY V2 posledni prekroceni 15min exportu
     has_date: true
     has_time: true
