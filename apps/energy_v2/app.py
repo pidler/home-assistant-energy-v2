@@ -22,10 +22,19 @@ from .diagnostics import (
     heartbeat_value,
     mode_value,
 )
-from .models import AppStatus, Mode, PlannerDecision, ValidationResult
+from .flow import (
+    FlowAssessment,
+    FlowDebouncer,
+    FlowSnapshot,
+    FlowState,
+    SignConventions,
+    derive_flow_snapshot,
+    summarize_flow,
+)
+from .models import AppStatus, Mode, PlannerDecision, Strategy, ValidationResult
 from .planner import plan_shadow_mode
 from .safety import find_active_conflicts, find_missing_entities, safe_to_enable, validate_telemetry
-from .telemetry import TelemetryReader, parse_bool_state, parse_float_state
+from .telemetry import TelemetryReader, parse_bool_state, parse_float_state, parse_text_state
 
 
 class EnergyV2App(hass.Hass):
@@ -47,6 +56,12 @@ class EnergyV2App(hass.Hass):
         )
         self.conflicting_automations = tuple(self.args.get("conflicting_automations", DEFAULT_CONFLICTING_AUTOMATIONS))
         self.telemetry = TelemetryReader(self, self.entity_ids)
+        self.sign_conventions = SignConventions(
+            solax_battery_charging_positive=bool(self.args.get("solax_battery_charging_positive", True)),
+            deye_battery_discharging_positive=bool(self.args.get("deye_battery_discharging_positive", True)),
+            deye_grid_import_positive=bool(self.args.get("deye_grid_import_positive", True)),
+        )
+        self.flow_debouncer = FlowDebouncer()
         self._debounce_handle: Any | None = None
         self._last_decision: PlannerDecision | None = None
         self._last_conflicts: tuple[str, ...] = ()
@@ -87,6 +102,7 @@ class EnergyV2App(hass.Hass):
             "energy_v2_shadow_mode",
             "energy_v2_export_enabled",
             "energy_v2_service_mode",
+            "energy_v2_strategy",
         )
         for key in watched_keys:
             self.listen_state(self._schedule_shadow_tick, self.entity_ids[key])
@@ -116,6 +132,15 @@ class EnergyV2App(hass.Hass):
             energy_v2_enabled = parse_bool_state(self.get_state(self.entity_ids["energy_v2_enabled"])) is True
             shadow_mode_enabled = parse_bool_state(self.get_state(self.entity_ids["energy_v2_shadow_mode"])) is True
             export_enabled = parse_bool_state(self.get_state(self.entity_ids["energy_v2_export_enabled"])) is True
+            strategy = self._selected_strategy()
+
+            if telemetry_validation.valid:
+                flow_snapshot = derive_flow_snapshot(snapshot, self.sign_conventions)
+                flow_assessment = self.flow_debouncer.assess(flow_snapshot, datetime.now().astimezone())
+                self._publish_flow_diagnostics(flow_snapshot, flow_assessment)
+            else:
+                flow_assessment = FlowAssessment(FlowState.UNKNOWN, warnings=("Telemetry is not valid",))
+                self._publish_invalid_flow_diagnostics(flow_assessment)
 
             enable_validation = safe_to_enable(
                 telemetry_validation,
@@ -145,6 +170,8 @@ class EnergyV2App(hass.Hass):
                     pv_reserve_w=float(self.args.get("pv_reserve_w", 1000.0)),
                     minimum_sell_price=float(self.args.get("minimum_sell_price", 3.0)),
                     maximum_future_rank=int(self.args.get("maximum_future_rank", 12)),
+                    strategy=strategy,
+                    flow_assessment=flow_assessment,
                 )
                 decision_text = format_decision(decision)
             else:
@@ -243,6 +270,28 @@ class EnergyV2App(hass.Hass):
 
     def _set_safe_to_enable_helper(self, safe: bool) -> None:
         self._set_helper("energy_v2_safe_to_enable", "on" if safe else "off")
+
+    def _selected_strategy(self) -> Strategy:
+        value = parse_text_state(self.get_state(self.entity_ids["energy_v2_strategy"]))
+        try:
+            return Strategy(value or Strategy.SUMMER_NO_GRID_CHARGE.value)
+        except ValueError:
+            self._warning("unknown strategy %r; keeping phase 2 passive", value)
+            return Strategy.SERVICE
+
+    def _publish_flow_diagnostics(self, snapshot: FlowSnapshot, assessment: FlowAssessment) -> None:
+        self._set_helper("energy_v2_flow_state", assessment.state.value)
+        self._set_helper("energy_v2_flow_summary", summarize_flow(snapshot, assessment))
+        self._set_helper("energy_v2_flow_warning", compact_reasons(assessment.warnings + assessment.transients))
+        self._set_helper("energy_v2_flow_violation", compact_reasons(assessment.violations))
+        if assessment.violations:
+            self._set_helper("energy_v2_last_flow_violation", heartbeat_value())
+
+    def _publish_invalid_flow_diagnostics(self, assessment: FlowAssessment) -> None:
+        self._set_helper("energy_v2_flow_state", assessment.state.value)
+        self._set_helper("energy_v2_flow_summary", "UNKNOWN: telemetry is not valid")
+        self._set_helper("energy_v2_flow_warning", compact_reasons(assessment.warnings))
+        self._set_helper("energy_v2_flow_violation", "")
 
     def _refresh_energy_v2_helper_existence(self) -> None:
         helper_entity_ids = tuple(self.entity_ids[key] for key in ENERGY_V2_HELPER_KEYS)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .models import Mode, PlannerDecision, TelemetrySnapshot
+from .flow import FlowAssessment
+from .models import Mode, PlannerDecision, Strategy, TelemetrySnapshot
 
 
 def plan_shadow_mode(
@@ -17,9 +18,31 @@ def plan_shadow_mode(
     pv_reserve_w: float,
     minimum_sell_price: float,
     maximum_future_rank: int,
+    strategy: Strategy = Strategy.SUMMER_NO_GRID_CHARGE,
+    flow_assessment: FlowAssessment | None = None,
 ) -> PlannerDecision:
+    if strategy is not Strategy.SUMMER_NO_GRID_CHARGE:
+        return PlannerDecision(
+            Mode.DISABLED,
+            f"Strategy {strategy.value} is not implemented in phase 2",
+            "high",
+            flow_assessment.state if flow_assessment else None,
+            bool(flow_assessment and flow_assessment.warnings),
+            bool(flow_assessment and flow_assessment.violations),
+        )
+
     if not telemetry_valid:
         return PlannerDecision(Mode.FAULT, "Telemetry is not valid", "high")
+
+    if flow_assessment and flow_assessment.violations:
+        return PlannerDecision(
+            Mode.FAULT,
+            "Flow violation detected",
+            "high",
+            flow_assessment.state,
+            bool(flow_assessment.warnings),
+            True,
+        )
 
     sell_price = snapshot.sell_price
     future_rank = snapshot.future_sell_rank
@@ -40,7 +63,14 @@ def plan_shadow_mode(
         and deye_soc > deye_min_soc_pct
         and price_window_ok
     ):
-        return PlannerDecision(Mode.EXPORT_DEYE, "DEYE FV ledger and sell price allow export", "medium")
+        return PlannerDecision(
+            Mode.EXPORT_DEYE,
+            "DEYE FV ledger and sell price allow export",
+            "medium",
+            flow_assessment.state if flow_assessment else None,
+            bool(flow_assessment and flow_assessment.warnings),
+            bool(flow_assessment and flow_assessment.violations),
+        )
 
     if (
         export_enabled
@@ -49,7 +79,14 @@ def plan_shadow_mode(
         and solax_soc > solax_min_soc_pct
         and price_window_ok
     ):
-        return PlannerDecision(Mode.EXPORT_SOLAX, "SolaX FV ledger and sell price allow export", "medium")
+        return PlannerDecision(
+            Mode.EXPORT_SOLAX,
+            "SolaX FV ledger and sell price allow export",
+            "medium",
+            flow_assessment.state if flow_assessment else None,
+            bool(flow_assessment and flow_assessment.warnings),
+            bool(flow_assessment and flow_assessment.violations),
+        )
 
     if (
         deye_soc is not None
@@ -68,6 +105,16 @@ def plan_shadow_mode(
                 Mode.PV_CHARGE_DEYE,
                 "Conservative PV surplus allows DEYE charge recommendation",
                 "low",
+                flow_assessment.state if flow_assessment else None,
+                bool(flow_assessment and flow_assessment.warnings),
+                bool(flow_assessment and flow_assessment.violations),
             )
 
-    return PlannerDecision(Mode.IDLE, "No safe profitable shadow action", "medium")
+    return PlannerDecision(
+        Mode.IDLE,
+        "No safe profitable shadow action",
+        "medium",
+        flow_assessment.state if flow_assessment else None,
+        bool(flow_assessment and flow_assessment.warnings),
+        bool(flow_assessment and flow_assessment.violations),
+    )

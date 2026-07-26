@@ -29,6 +29,24 @@ class AppStatus(StrEnum):
     CONFIG_ERROR = "CONFIG_ERROR"
 
 
+class Strategy(StrEnum):
+    SUMMER_NO_GRID_CHARGE = "SUMMER_NO_GRID_CHARGE"
+    WINTER_GRID_OPTIMIZATION = "WINTER_GRID_OPTIMIZATION"
+    SERVICE = "SERVICE"
+
+
+class FlowState(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    NORMAL = "NORMAL"
+    GRID_IMPORT = "GRID_IMPORT"
+    GRID_EXPORT = "GRID_EXPORT"
+    LIKELY_PV_SURPLUS_CHARGE = "LIKELY_PV_SURPLUS_CHARGE"
+    SOLAX_TO_DEYE = "SOLAX_TO_DEYE"
+    DEYE_TO_SOLAX = "DEYE_TO_SOLAX"
+    CROSS_CHARGING = "CROSS_CHARGING"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
 @dataclass(frozen=True)
 class TelemetrySnapshot:
     timestamp: datetime
@@ -67,3 +85,6 @@ class PlannerDecision:
     mode: Mode
     reason: str
     confidence: str
+    flow_state: FlowState | None = None
+    flow_warning: bool = False
+    flow_violation: bool = False

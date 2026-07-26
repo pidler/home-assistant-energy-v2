@@ -26,8 +26,14 @@ ENTITY_IDS: dict[str, str] = {
     "energy_v2_export_enabled": "input_boolean.energy_v2_export_enabled",
     "energy_v2_service_mode": "input_boolean.energy_v2_service_mode",
     "energy_v2_safe_to_enable": "input_boolean.energy_v2_safe_to_enable",
+    "energy_v2_strategy": "input_select.energy_v2_strategy",
     "energy_v2_requested_mode": "input_select.energy_v2_requested_mode",
     "energy_v2_actual_mode": "input_select.energy_v2_actual_mode",
+    "energy_v2_flow_state": "input_select.energy_v2_flow_state",
+    "energy_v2_flow_summary": "input_text.energy_v2_flow_summary",
+    "energy_v2_flow_warning": "input_text.energy_v2_flow_warning",
+    "energy_v2_flow_violation": "input_text.energy_v2_flow_violation",
+    "energy_v2_last_flow_violation": "input_datetime.energy_v2_last_flow_violation",
     "energy_v2_last_fault": "input_text.energy_v2_last_fault",
     "energy_v2_last_decision": "input_text.energy_v2_last_decision",
     "energy_v2_active_conflicts": "input_text.energy_v2_active_conflicts",
@@ -67,8 +73,14 @@ ENERGY_V2_HELPER_KEYS: tuple[str, ...] = (
     "energy_v2_export_enabled",
     "energy_v2_service_mode",
     "energy_v2_safe_to_enable",
+    "energy_v2_strategy",
     "energy_v2_requested_mode",
     "energy_v2_actual_mode",
+    "energy_v2_flow_state",
+    "energy_v2_flow_summary",
+    "energy_v2_flow_warning",
+    "energy_v2_flow_violation",
+    "energy_v2_last_flow_violation",
     "energy_v2_last_fault",
     "energy_v2_last_decision",
     "energy_v2_active_conflicts",
@@ -84,10 +96,6 @@ LEGACY_MASTER_HELPER_KEYS: tuple[str, ...] = (
     "legacy_enabled",
     "current_energy_trading_enabled",
 )
-
-SOLAX_BATTERY_CHARGING_POSITIVE = True
-DEYE_BATTERY_DISCHARGING_POSITIVE = True
-DEYE_GRID_EXPORT_NEGATIVE = True
 
 OWNED_ACTUATORS: tuple[str, ...] = (
     "select.solax_charger_use_mode",
