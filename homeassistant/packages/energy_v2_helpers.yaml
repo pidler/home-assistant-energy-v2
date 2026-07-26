@@ -20,6 +20,14 @@ input_boolean:
     initial: false
 
 input_select:
+  energy_v2_strategy:
+    name: ENERGY V2 strategie
+    options:
+      - SUMMER_NO_GRID_CHARGE
+      - WINTER_GRID_OPTIMIZATION
+      - SERVICE
+    initial: SUMMER_NO_GRID_CHARGE
+
   energy_v2_requested_mode:
     name: ENERGY V2 pozadovany rezim
     options:
@@ -53,6 +61,20 @@ input_select:
       - DEGRADED
       - CONFIG_ERROR
     initial: STARTING
+
+  energy_v2_flow_state:
+    name: ENERGY V2 stav toku
+    options:
+      - UNKNOWN
+      - NORMAL
+      - GRID_IMPORT
+      - GRID_EXPORT
+      - LIKELY_PV_SURPLUS_CHARGE
+      - SOLAX_TO_DEYE
+      - DEYE_TO_SOLAX
+      - CROSS_CHARGING
+      - AMBIGUOUS
+    initial: UNKNOWN
 
 input_number:
   energy_v2_deye_fv_ledger:
@@ -90,6 +112,18 @@ input_text:
     name: ENERGY V2 posledni chyba vyhodnoceni
     max: 255
 
+  energy_v2_flow_summary:
+    name: ENERGY V2 souhrn toku
+    max: 255
+
+  energy_v2_flow_warning:
+    name: ENERGY V2 varovani toku
+    max: 255
+
+  energy_v2_flow_violation:
+    name: ENERGY V2 poruseni toku
+    max: 255
+
 input_datetime:
   energy_v2_heartbeat:
     name: ENERGY V2 heartbeat
@@ -98,5 +132,10 @@ input_datetime:
 
   energy_v2_last_successful_evaluation:
     name: ENERGY V2 posledni uspesne vyhodnoceni
+    has_date: true
+    has_time: true
+
+  energy_v2_last_flow_violation:
+    name: ENERGY V2 posledni poruseni toku
     has_date: true
     has_time: true
