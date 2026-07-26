@@ -29,13 +29,19 @@ jobs:
           python -m pip install pytest ruff
 
       - name: Python syntax check
-        run: python -m compileall apps tests
+        run: python -m compileall apps tests scripts
 
       - name: Ruff lint
-        run: ruff check apps tests
+        run: ruff check apps tests scripts
 
       - name: Ruff format check
-        run: ruff format --check apps tests
+        run: ruff format --check apps tests scripts
+
+      - name: Verify deployment files
+        run: python scripts/verify_deployment_files.py
+
+      - name: Verify Home Assistant helper package
+        run: python scripts/verify_homeassistant_package.py
 
       - name: Unit and stubbed AppDaemon import tests
         run: pytest
