@@ -22,7 +22,7 @@ from .diagnostics import (
     heartbeat_value,
     mode_value,
 )
-from .models import AppStatus, Mode, PlannerDecision
+from .models import AppStatus, Mode, PlannerDecision, ValidationResult
 from .planner import plan_shadow_mode
 from .safety import find_active_conflicts, find_missing_entities, safe_to_enable, validate_telemetry
 from .telemetry import TelemetryReader, parse_bool_state, parse_float_state
@@ -51,6 +51,7 @@ class EnergyV2App(hass.Hass):
         self._last_decision: PlannerDecision | None = None
         self._last_conflicts: tuple[str, ...] = ()
         self._last_fault_text = ""
+        self._last_telemetry_error_text = ""
         self._missing_required_entities: tuple[str, ...] = ()
         self._missing_optional_entities: tuple[str, ...] = ()
         self._missing_energy_v2_helpers: tuple[str, ...] = ()
@@ -131,7 +132,7 @@ class EnergyV2App(hass.Hass):
             if shadow_mode_enabled:
                 decision = plan_shadow_mode(
                     snapshot,
-                    telemetry_valid=telemetry_validation.valid and enable_validation.valid,
+                    telemetry_valid=telemetry_validation.valid,
                     export_enabled=export_enabled,
                     deye_ledger_kwh=parse_float_state(self.get_state(self.entity_ids["energy_v2_deye_fv_ledger"]))
                     or 0.0,
@@ -161,10 +162,10 @@ class EnergyV2App(hass.Hass):
 
             if not shadow_mode_enabled:
                 status = AppStatus.CONFIG_ERROR if not enable_validation.valid else AppStatus.HEALTHY
-                error_text = compact_reasons(enable_validation.reasons) if not enable_validation.valid else ""
+                error_text = self._evaluation_error_text(telemetry_validation, enable_validation)
                 self._mark_shadow_disabled_evaluation(status, error_text)
             elif energy_v2_enabled and not enable_validation.valid:
-                fault_text = compact_reasons(enable_validation.reasons)
+                fault_text = self._evaluation_error_text(telemetry_validation, enable_validation)
                 self._set_helper("energy_v2_requested_mode", mode_value(Mode.FAULT))
                 self._set_helper("energy_v2_actual_mode", mode_value(Mode.DISABLED))
                 self._set_helper("energy_v2_last_fault", fault_text)
@@ -181,7 +182,12 @@ class EnergyV2App(hass.Hass):
                 )
                 self._mark_successful_shadow_evaluation(AppStatus.HEALTHY)
             else:
-                self._mark_successful_shadow_evaluation(AppStatus.HEALTHY, requested_mode=Mode.DISABLED)
+                error_text = self._evaluation_error_text(telemetry_validation, enable_validation)
+                self._mark_successful_shadow_evaluation(
+                    AppStatus.HEALTHY,
+                    requested_mode=Mode.DISABLED,
+                    error_text=error_text,
+                )
 
             if diagnostics != self._last_conflicts:
                 self._last_conflicts = diagnostics
@@ -190,8 +196,10 @@ class EnergyV2App(hass.Hass):
             if self._last_decision != decision:
                 self._last_decision = decision
                 self._info("shadow decision: %s", format_decision(decision))
-            if not telemetry_validation.valid:
-                self._warning("invalid telemetry: %s", compact_reasons(telemetry_validation.reasons))
+            telemetry_error_text = compact_reasons(telemetry_validation.reasons)
+            if not telemetry_validation.valid and telemetry_error_text != self._last_telemetry_error_text:
+                self._last_telemetry_error_text = telemetry_error_text
+                self._warning("invalid telemetry: %s", telemetry_error_text)
         except Exception as exc:  # pragma: no cover - AppDaemon runtime guard
             error_text = f"unexpected shadow tick error: {exc!r}"
             self._set_helper("energy_v2_last_evaluation_error", error_text)
@@ -267,11 +275,16 @@ class EnergyV2App(hass.Hass):
     def _prefix_entities(self, prefix: str, entity_ids: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(f"{prefix}:{entity_id}" for entity_id in entity_ids)
 
-    def _mark_successful_shadow_evaluation(self, status: AppStatus, requested_mode: Mode | None = None) -> None:
+    def _mark_successful_shadow_evaluation(
+        self,
+        status: AppStatus,
+        requested_mode: Mode | None = None,
+        error_text: str = "",
+    ) -> None:
         if requested_mode is not None:
             self._set_helper("energy_v2_requested_mode", mode_value(requested_mode))
         self._set_helper("energy_v2_actual_mode", mode_value(Mode.DISABLED))
-        self._set_helper("energy_v2_last_evaluation_error", "")
+        self._set_helper("energy_v2_last_evaluation_error", error_text)
         self._set_helper("energy_v2_last_successful_evaluation", heartbeat_value())
         self._set_helper("energy_v2_app_status", app_status_value(status))
 
@@ -286,6 +299,14 @@ class EnergyV2App(hass.Hass):
         if text != self._last_fault_text:
             self._last_fault_text = text
             self._warning("enable rejected: %s", text)
+
+    def _evaluation_error_text(self, telemetry: ValidationResult, enable: ValidationResult) -> str:
+        parts: list[str] = []
+        if telemetry.reasons:
+            parts.append("Invalid telemetry: " + compact_reasons(telemetry.reasons, max_len=110))
+        if enable.reasons:
+            parts.append("Safe-to-enable blocked: " + compact_reasons(enable.reasons, max_len=110))
+        return compact_reasons(tuple(parts))
 
     def _info(self, message: str, *args: Any) -> None:
         self.log(f"{self.log_prefix} " + message, *args, level="INFO")

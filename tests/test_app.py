@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from apps.energy_v2.config import DEFAULT_CONFLICTING_AUTOMATIONS, ENTITY_IDS, OPTIONAL_TELEMETRY_KEYS, OWNED_ACTUATORS
+from apps.energy_v2.diagnostics import compact_reasons
 from apps.energy_v2.models import Mode
 
 
@@ -226,12 +227,19 @@ def test_safe_to_enable_off_when_conflict_active() -> None:
     module = import_app_module()
     app = module.EnergyV2App()
     app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
     app.states[DEFAULT_CONFLICTING_AUTOMATIONS[0]] = "on"
     app.initialize()
 
     app._shadow_tick()
 
     assert helper_value(app, "energy_v2_safe_to_enable") == "off"
+    assert helper_value(app, "energy_v2_requested_mode") == "DISABLED"
+    assert helper_value(app, "energy_v2_actual_mode") == "DISABLED"
+    assert helper_value(app, "energy_v2_app_status") == "HEALTHY"
+    assert helper_value(app, "energy_v2_last_decision") != "FAULT: Telemetry is not valid (confidence=high)"
+    assert "Safe-to-enable blocked:" in helper_value(app, "energy_v2_last_evaluation_error")
+    assert DEFAULT_CONFLICTING_AUTOMATIONS[0] in helper_value(app, "energy_v2_last_evaluation_error")
 
 
 def test_safe_to_enable_on_with_complete_valid_configuration() -> None:
@@ -279,3 +287,42 @@ def test_successful_shadow_tick_sets_last_successful_evaluation_time() -> None:
 
     assert helper_value(app, "energy_v2_app_status") == "HEALTHY"
     assert helper_value(app, "energy_v2_last_successful_evaluation")
+
+
+def test_invalid_required_safety_telemetry_reports_specific_error() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
+    app.states[ENTITY_IDS["solax_soc"]] = "unavailable"
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert helper_value(app, "energy_v2_requested_mode") == "DISABLED"
+    assert "Invalid telemetry:" in helper_value(app, "energy_v2_last_evaluation_error")
+    assert "SolaX SOC is missing" in helper_value(app, "energy_v2_last_evaluation_error")
+
+
+def test_unavailable_optional_future_rank_with_export_disabled_is_not_invalid_telemetry() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
+    app.states[ENTITY_IDS["energy_v2_export_enabled"]] = "off"
+    app.states[ENTITY_IDS["future_sell_rank"]] = "unknown"
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert "Invalid telemetry:" not in helper_value(app, "energy_v2_last_evaluation_error")
+
+
+def test_compact_reasons_is_deterministic_and_truncates_long_output() -> None:
+    reasons = tuple(f"reason-{index:02d}-xxxxxxxxxxxxxxxxxxxxxxxx" for index in range(20, 0, -1))
+
+    text = compact_reasons(reasons, max_len=80)
+
+    assert len(text) <= 80
+    assert text.startswith("reason-01-")
+    assert "+20 total" in text

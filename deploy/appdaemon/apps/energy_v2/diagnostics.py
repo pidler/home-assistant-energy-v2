@@ -6,8 +6,15 @@ from .models import AppStatus, Mode, PlannerDecision
 
 
 def compact_reasons(reasons: tuple[str, ...], max_len: int = 255) -> str:
-    text = "; ".join(reasons)
-    return text[:max_len]
+    ordered_reasons = tuple(sorted(dict.fromkeys(reasons)))
+    text = "; ".join(ordered_reasons)
+    if len(text) <= max_len:
+        return text
+
+    suffix = f"; +{len(ordered_reasons)} total"
+    if len(suffix) >= max_len:
+        return text[:max_len]
+    return text[: max_len - len(suffix)] + suffix
 
 
 def format_decision(decision: PlannerDecision, max_len: int = 255) -> str:

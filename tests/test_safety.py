@@ -44,6 +44,27 @@ def test_deye_not_normal_invalid() -> None:
     assert any("expected 'Normal'" in reason for reason in result.reasons)
 
 
+def test_deye_device_state_whitespace_is_valid() -> None:
+    result = validate_telemetry(snapshot(deye_device_state=" Normal "))
+    assert result.valid
+
+
+def test_multiple_invalid_telemetry_reasons_are_reported() -> None:
+    result = validate_telemetry(
+        snapshot(
+            deye_connected=False,
+            deye_soc_pct=101.0,
+            solax_soc_pct=-1.0,
+            sell_price=None,
+        )
+    )
+    assert not result.valid
+    assert "DEYE is not connected" in result.reasons
+    assert "DEYE SOC is outside 0-100 %: 101.0" in result.reasons
+    assert "SolaX SOC is outside 0-100 %: -1.0" in result.reasons
+    assert "Sell price is missing" in result.reasons
+
+
 def test_missing_soc_invalid() -> None:
     result = validate_telemetry(snapshot(deye_soc_pct=None))
     assert not result.valid
@@ -66,6 +87,11 @@ def test_future_sell_rank_below_one_invalid_when_available() -> None:
     result = validate_telemetry(snapshot(future_sell_rank=0.0))
     assert not result.valid
     assert any("Future sell rank is below 1" in reason for reason in result.reasons)
+
+
+def test_future_sell_rank_unknown_is_optional() -> None:
+    result = validate_telemetry(snapshot(future_sell_rank=None))
+    assert result.valid
 
 
 def test_all_safe_valid() -> None:
