@@ -118,6 +118,11 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["energy_v2_shadow_mode"]: "on",
             ENTITY_IDS["energy_v2_export_enabled"]: "on",
             ENTITY_IDS["energy_v2_service_mode"]: "off",
+            ENTITY_IDS["energy_v2_strategy"]: "SUMMER_NO_GRID_CHARGE",
+            ENTITY_IDS["energy_v2_flow_state"]: "UNKNOWN",
+            ENTITY_IDS["energy_v2_flow_summary"]: "",
+            ENTITY_IDS["energy_v2_flow_warning"]: "",
+            ENTITY_IDS["energy_v2_flow_violation"]: "",
             ENTITY_IDS["energy_v2_deye_fv_ledger"]: "1",
             ENTITY_IDS["energy_v2_solax_fv_ledger"]: "0",
         }
@@ -305,6 +310,35 @@ def test_successful_shadow_tick_sets_last_successful_evaluation_time() -> None:
 
     assert helper_value(app, "energy_v2_app_status") == "HEALTHY"
     assert helper_value(app, "energy_v2_last_successful_evaluation")
+
+
+def test_flow_helpers_are_written_on_successful_shadow_tick() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["deye_battery_power"]] = "-800"
+    app.states[ENTITY_IDS["deye_grid_power"]] = "0"
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert helper_value(app, "energy_v2_flow_state") == "LIKELY_PV_SURPLUS_CHARGE"
+    assert "DEYE batt charge/discharge 800/0 W" in helper_value(app, "energy_v2_flow_summary")
+
+
+def test_unimplemented_strategy_stays_passive_and_disables_recommendation() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
+    app.states[ENTITY_IDS["energy_v2_strategy"]] = "WINTER_GRID_OPTIMIZATION"
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert helper_value(app, "energy_v2_requested_mode") == "DISABLED"
+    assert helper_value(app, "energy_v2_actual_mode") == "DISABLED"
+    assert "not implemented" in helper_value(app, "energy_v2_last_decision")
 
 
 def test_invalid_required_safety_telemetry_reports_specific_error() -> None:
