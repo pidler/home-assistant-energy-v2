@@ -81,6 +81,12 @@ Required helpers:
 - `input_text.energy_v2_flow_warning`
 - `input_text.energy_v2_flow_violation`
 - `input_datetime.energy_v2_last_flow_violation`
+- `input_number.energy_v2_instant_grid_export_w`
+- `input_number.energy_v2_rolling_15min_export_w`
+- `input_number.energy_v2_export_window_covered_s`
+- `input_select.energy_v2_export_limit_state`
+- `input_text.energy_v2_export_limit_summary`
+- `input_datetime.energy_v2_last_export_average_violation`
 - `input_text.energy_v2_last_fault`
 - `input_text.energy_v2_last_decision`
 - `input_text.energy_v2_active_conflicts`
@@ -125,6 +131,13 @@ Diagnostics written by the app:
 - `input_text.energy_v2_flow_warning`: persistent or transient flow warnings
 - `input_text.energy_v2_flow_violation`: persistent flow violations
 - `input_datetime.energy_v2_last_flow_violation`: last time a persistent flow violation was seen
+- `input_number.energy_v2_instant_grid_export_w`: current aggregate grid export sample
+- `input_number.energy_v2_rolling_15min_export_w`: time-weighted rolling export average
+- `input_number.energy_v2_export_window_covered_s`: available rolling-window history
+- `input_select.energy_v2_export_limit_state`: export-limit classification
+- `input_text.energy_v2_export_limit_summary`: compact export-limit diagnostics
+- `input_datetime.energy_v2_last_export_average_violation`: last time the 15-minute average exceeded
+  the permitted average
 
 If `input_boolean.energy_v2_shadow_mode` is `off`:
 
@@ -189,6 +202,19 @@ Ledger helpers are read only; no ledger calculation or mutation is implemented.
 Phase 2 implements `SUMMER_NO_GRID_CHARGE` diagnostics. It does not track historical battery
 energy origin. It evaluates only current telemetry and classifies physical flows as described in
 `docs/phase-2-summer-flow-monitoring.md`.
+
+It also monitors aggregate export against the confirmed system parameters:
+
+- both inverters are 12 kW,
+- SolaX battery capacity is 24 kWh,
+- DEYE battery capacity is 32 kWh,
+- both confirmed minimum SOC values are 10%,
+- permitted export is 10,000 W as a 15-minute average,
+- ENERGY V2 operational export target is 9,800 W.
+
+The rolling export average is time-weighted over the last 900 seconds. Instantaneous excursions
+above 9,800 W or 10,000 W are warnings only; only a time-weighted 15-minute average above 10,000 W
+is a flow violation.
 
 `WINTER_GRID_OPTIMIZATION` and `SERVICE` are accepted strategy helper values but are not
 implemented in phase 2; they return a passive `DISABLED` recommendation.

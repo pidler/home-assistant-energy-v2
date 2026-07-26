@@ -11,6 +11,7 @@ Current development:
 
 - phase 2 summer flow monitoring: passive diagnostics for current SolaX, DEYE, grid, PV, and house
   power flows.
+- aggregate export-limit diagnostics using a time-weighted rolling 15-minute average.
 
 Safety boundary:
 
@@ -19,6 +20,12 @@ Safety boundary:
 - Grid Charge is not implemented,
 - ledger helpers are not written,
 - legacy `energy_trading_*` entities and automations are not changed by this project phase.
+
+Confirmed phase 2 export parameters:
+
+- operational target: 9,800 W aggregate export,
+- permitted average: 10,000 W over 15 minutes,
+- instantaneous excursions are warnings, not automatic faults.
 
 Useful checks:
 
