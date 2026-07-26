@@ -179,6 +179,14 @@ New Home Assistant helpers:
 
 These helpers do not drive any control path.
 
+## Dashboard
+
+Phase 2 includes a versioned read-only Lovelace dashboard at
+`homeassistant/dashboards/energy_v2.yaml`.
+
+The dashboard shows status, telemetry, flow diagnostics, export-limit gauges and documented
+settings. It is not deployed by this PR and does not add any physical control path.
+
 In-memory counters track transient imports, persistent imports, SolaX-to-DEYE events,
 DEYE-to-SolaX events, and rough state durations. They reset when AppDaemon restarts.
 

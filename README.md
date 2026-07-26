@@ -12,6 +12,7 @@ Current development:
 - phase 2 summer flow monitoring: passive diagnostics for current SolaX, DEYE, grid, PV, and house
   power flows.
 - aggregate export-limit diagnostics using a time-weighted rolling 15-minute average.
+- read-only Lovelace dashboard YAML for phase 2 review.
 
 Safety boundary:
 
@@ -20,6 +21,7 @@ Safety boundary:
 - Grid Charge is not implemented,
 - ledger helpers are not written,
 - legacy `energy_trading_*` entities and automations are not changed by this project phase.
+- the dashboard is not deployed by this repository change.
 
 Confirmed phase 2 export parameters:
 
@@ -36,4 +38,5 @@ ruff format --check .
 pytest
 python scripts/verify_deployment_files.py
 python scripts/verify_homeassistant_package.py
+python scripts/verify_dashboard.py
 ```

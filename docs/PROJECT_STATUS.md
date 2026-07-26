@@ -24,6 +24,9 @@ Date: 2026-07-27.
 - passive current flow classification,
 - passive export-limit diagnostics,
 - time-weighted rolling 15-minute average export calculation.
+- read-only Lovelace dashboard YAML in `homeassistant/dashboards/energy_v2.yaml`.
+
+The dashboard is implemented in the repository for review. It is not deployed to production.
 
 ## Not implemented
 
@@ -34,3 +37,4 @@ Date: 2026-07-27.
 - export regulator,
 - ledger calculation or ledger writes,
 - changes to legacy `energy_trading_*` entities.
+- dashboard deployment to Home Assistant.

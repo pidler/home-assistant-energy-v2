@@ -16,5 +16,6 @@ Phase 2 in PR #2:
 
 - not deployed,
 - not loaded by production AppDaemon,
+- dashboard not deployed to production,
 - no Home Assistant helper values changed in production,
 - no legacy automation changed in production.

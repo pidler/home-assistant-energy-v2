@@ -15,13 +15,16 @@ Status: in review in PR #2.
 - Monitor current SolaX, DEYE, PV, house, and grid flows.
 - Monitor aggregate grid export against one shared export budget.
 - Calculate time-weighted 15-minute export average.
+- Provide a read-only dashboard for status, telemetry, flow diagnostics and export-limit review.
 - Keep all outputs diagnostic only.
 
 ## Future phase - passive deployment of phase 2
 
 After code review:
 
+- review the dashboard together with the phase 2 AppDaemon changes,
 - deploy phase 2 AppDaemon code passively,
+- add the dashboard only through a separately approved Home Assistant Lovelace change,
 - verify helper creation,
 - observe flow states and export average for several days,
 - compare diagnostics with real inverter behavior.

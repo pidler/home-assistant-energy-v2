@@ -12,6 +12,7 @@ Phase 2 is diagnostic only.
 - Export regulation must not be implemented.
 - Ledger helpers must not be written.
 - Legacy `energy_trading_*` entities and automations must not be changed.
+- The phase 2 dashboard must remain read-only and must not expose service calls or active actuator controls.
 
 ## Legal export limit
 
