@@ -102,7 +102,9 @@ class EnergyV2App(hass.Hass):
             }
             active_conflicts = find_active_conflicts(conflict_states, self.conflicting_automations)
             legacy_enabled = parse_bool_state(self.get_state(self.entity_ids["legacy_enabled"])) is True
-            current_enabled = parse_bool_state(self.get_state(self.entity_ids["current_energy_trading_enabled"])) is True
+            current_enabled = (
+                parse_bool_state(self.get_state(self.entity_ids["current_energy_trading_enabled"])) is True
+            )
             service_mode = parse_bool_state(self.get_state(self.entity_ids["energy_v2_service_mode"])) is True
             energy_v2_enabled = parse_bool_state(self.get_state(self.entity_ids["energy_v2_enabled"])) is True
             export_enabled = parse_bool_state(self.get_state(self.entity_ids["energy_v2_export_enabled"])) is True

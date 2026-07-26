@@ -64,7 +64,10 @@ def plan_shadow_mode(
             and solax_soc > solax_pv_charge_start_soc_pct
             and pv_surplus_w >= pv_reserve_w + 500
         ):
-            return PlannerDecision(Mode.PV_CHARGE_DEYE, "Conservative PV surplus allows DEYE charge recommendation", "low")
+            return PlannerDecision(
+                Mode.PV_CHARGE_DEYE,
+                "Conservative PV surplus allows DEYE charge recommendation",
+                "low",
+            )
 
     return PlannerDecision(Mode.IDLE, "No safe profitable shadow action", "medium")
-

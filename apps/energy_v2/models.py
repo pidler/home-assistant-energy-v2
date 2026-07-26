@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 
 
-class Mode(str, Enum):
+class Mode(StrEnum):
     DISABLED = "DISABLED"
     IDLE = "IDLE"
     PV_CHARGE_DEYE = "PV_CHARGE_DEYE"
@@ -20,27 +19,27 @@ class Mode(str, Enum):
 class TelemetrySnapshot:
     timestamp: datetime
 
-    solax_soc_pct: Optional[float]
-    solax_battery_power_w: Optional[float]
-    solax_pv_power_w: Optional[float]
-    solax_house_load_w: Optional[float]
-    solax_grid_import_w: Optional[float]
-    solax_grid_export_w: Optional[float]
+    solax_soc_pct: float | None
+    solax_battery_power_w: float | None
+    solax_pv_power_w: float | None
+    solax_house_load_w: float | None
+    solax_grid_import_w: float | None
+    solax_grid_export_w: float | None
 
-    deye_soc_pct: Optional[float]
-    deye_battery_power_w: Optional[float]
-    deye_battery_state: Optional[str]
-    deye_grid_power_w: Optional[float]
-    deye_external_power_w: Optional[float]
-    deye_device_state: Optional[str]
-    deye_connected: Optional[bool]
+    deye_soc_pct: float | None
+    deye_battery_power_w: float | None
+    deye_battery_state: str | None
+    deye_grid_power_w: float | None
+    deye_external_power_w: float | None
+    deye_device_state: str | None
+    deye_connected: bool | None
 
-    buy_price: Optional[float]
-    sell_price: Optional[float]
-    future_sell_rank: Optional[float]
+    buy_price: float | None
+    sell_price: float | None
+    future_sell_rank: float | None
 
-    deye_grid_charging_enabled: Optional[bool]
-    deye_export_enabled: Optional[bool]
+    deye_grid_charging_enabled: bool | None
+    deye_export_enabled: bool | None
 
 
 @dataclass(frozen=True)
@@ -54,4 +53,3 @@ class PlannerDecision:
     mode: Mode
     reason: str
     confidence: str
-
