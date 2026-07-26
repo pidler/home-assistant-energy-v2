@@ -1,0 +1,24 @@
+energy_v2:
+  module: energy_v2.app
+  class: EnergyV2App
+  enabled_entity: input_boolean.energy_v2_enabled
+  shadow_mode_entity: input_boolean.energy_v2_shadow_mode
+  export_enabled_entity: input_boolean.energy_v2_export_enabled
+  log_level: INFO
+  deye_min_soc_pct: 15
+  deye_max_soc_pct: 90
+  solax_min_soc_pct: 30
+  solax_pv_charge_start_soc_pct: 95
+  pv_reserve_w: 1000
+  minimum_sell_price: 3.0
+  maximum_future_rank: 12
+  conflicting_automations:
+    - automation.fve_solax_zpet_do_self_use_po_vybiti_deye
+    - automation.rizeni_solaxu_podle_kalendare_nakup
+    - automation.rizeni_solaxu_podle_kalendare_prodej
+    - automation.deye_rizeni_baterie_dle_ceny_nabijeni_vybijeni
+    - automation.gridcontrol_charge
+    - automation.spust_vybijeno_deye_v_konkretni_cas
+    - automation.vypne_vybijeni_deye_a_zapne_self_use_mod_na_solaxu
+    - automation.zpnout_nabijeni_deye_v_ucity_cas
+

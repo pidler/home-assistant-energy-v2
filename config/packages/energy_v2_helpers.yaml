@@ -1,0 +1,102 @@
+input_boolean:
+  energy_v2_enabled:
+    name: ENERGY V2 povolen
+    initial: false
+
+  energy_v2_shadow_mode:
+    name: ENERGY V2 shadow rezim
+    initial: true
+
+  energy_v2_export_enabled:
+    name: ENERGY V2 export povolen
+    initial: false
+
+  energy_v2_service_mode:
+    name: ENERGY V2 servisni rezim
+    initial: false
+
+  energy_v2_safe_to_enable:
+    name: ENERGY V2 bezpecne povolit
+    initial: false
+
+input_select:
+  energy_v2_requested_mode:
+    name: ENERGY V2 pozadovany rezim
+    options:
+      - DISABLED
+      - IDLE
+      - PV_CHARGE_DEYE
+      - EXPORT_DEYE
+      - EXPORT_SOLAX
+      - FAULT
+      - SERVICE
+    initial: DISABLED
+
+  energy_v2_actual_mode:
+    name: ENERGY V2 skutecny rezim
+    options:
+      - DISABLED
+      - IDLE
+      - TRANSITION
+      - PV_CHARGE_DEYE
+      - EXPORT_DEYE
+      - EXPORT_SOLAX
+      - FAULT
+      - SERVICE
+    initial: DISABLED
+
+  energy_v2_app_status:
+    name: ENERGY V2 stav aplikace
+    options:
+      - STARTING
+      - HEALTHY
+      - DEGRADED
+      - CONFIG_ERROR
+    initial: STARTING
+
+input_number:
+  energy_v2_deye_fv_ledger:
+    name: ENERGY V2 DEYE FV energie k prodeji
+    min: 0
+    max: 100
+    step: 0.01
+    unit_of_measurement: kWh
+    mode: box
+    initial: 0
+
+  energy_v2_solax_fv_ledger:
+    name: ENERGY V2 SolaX FV energie k prodeji
+    min: 0
+    max: 100
+    step: 0.01
+    unit_of_measurement: kWh
+    mode: box
+    initial: 0
+
+input_text:
+  energy_v2_last_fault:
+    name: ENERGY V2 posledni chyba
+    max: 255
+
+  energy_v2_last_decision:
+    name: ENERGY V2 posledni rozhodnuti
+    max: 255
+
+  energy_v2_active_conflicts:
+    name: ENERGY V2 aktivni konflikty
+    max: 255
+
+  energy_v2_last_evaluation_error:
+    name: ENERGY V2 posledni chyba vyhodnoceni
+    max: 255
+
+input_datetime:
+  energy_v2_heartbeat:
+    name: ENERGY V2 heartbeat
+    has_date: true
+    has_time: true
+
+  energy_v2_last_successful_evaluation:
+    name: ENERGY V2 posledni uspesne vyhodnoceni
+    has_date: true
+    has_time: true
