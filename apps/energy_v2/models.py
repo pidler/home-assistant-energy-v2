@@ -15,6 +15,13 @@ class Mode(StrEnum):
     SERVICE = "SERVICE"
 
 
+class AppStatus(StrEnum):
+    STARTING = "STARTING"
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    CONFIG_ERROR = "CONFIG_ERROR"
+
+
 @dataclass(frozen=True)
 class TelemetrySnapshot:
     timestamp: datetime

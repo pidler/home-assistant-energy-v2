@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -19,9 +20,12 @@ def parse_float_state(value: object) -> float | None:
     if isinstance(value, str) and value.strip().lower() in INVALID_STATES:
         return None
     try:
-        return float(value)
+        numeric_value = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(numeric_value):
+        return None
+    return numeric_value
 
 
 def parse_bool_state(value: object) -> bool | None:
@@ -64,6 +68,9 @@ class TelemetryReader:
             errors.append(f"{self.entity_ids[key]} is missing or not numeric")
         return value
 
+    def _optional_float(self, key: str) -> float | None:
+        return parse_float_state(self._state(key))
+
     def _bool(self, key: str, errors: list[str]) -> bool | None:
         value = parse_bool_state(self._state(key))
         if value is None:
@@ -95,7 +102,7 @@ class TelemetryReader:
             deye_connected=self._bool("deye_connection", errors),
             buy_price=self._float("buy_price", errors),
             sell_price=self._float("sell_price", errors),
-            future_sell_rank=self._float("future_sell_rank", errors),
+            future_sell_rank=self._optional_float("future_sell_rank"),
             deye_grid_charging_enabled=self._bool("deye_grid_charging", errors),
             deye_export_enabled=self._bool("deye_export_surplus", errors),
         )

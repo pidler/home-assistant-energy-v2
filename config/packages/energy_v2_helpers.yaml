@@ -4,7 +4,7 @@ input_boolean:
     initial: false
 
   energy_v2_shadow_mode:
-    name: ENERGY V2 shadow režim
+    name: ENERGY V2 shadow rezim
     initial: true
 
   energy_v2_export_enabled:
@@ -12,12 +12,12 @@ input_boolean:
     initial: false
 
   energy_v2_service_mode:
-    name: ENERGY V2 servisní režim
+    name: ENERGY V2 servisni rezim
     initial: false
 
 input_select:
   energy_v2_requested_mode:
-    name: ENERGY V2 požadovaný režim
+    name: ENERGY V2 pozadovany rezim
     options:
       - DISABLED
       - IDLE
@@ -29,7 +29,7 @@ input_select:
     initial: DISABLED
 
   energy_v2_actual_mode:
-    name: ENERGY V2 skutečný režim
+    name: ENERGY V2 skutecny rezim
     options:
       - DISABLED
       - IDLE
@@ -40,6 +40,15 @@ input_select:
       - FAULT
       - SERVICE
     initial: DISABLED
+
+  energy_v2_app_status:
+    name: ENERGY V2 stav aplikace
+    options:
+      - STARTING
+      - HEALTHY
+      - DEGRADED
+      - CONFIG_ERROR
+    initial: STARTING
 
 input_number:
   energy_v2_deye_fv_ledger:
@@ -62,15 +71,19 @@ input_number:
 
 input_text:
   energy_v2_last_fault:
-    name: ENERGY V2 poslední chyba
+    name: ENERGY V2 posledni chyba
     max: 255
 
   energy_v2_last_decision:
-    name: ENERGY V2 poslední rozhodnutí
+    name: ENERGY V2 posledni rozhodnuti
     max: 255
 
   energy_v2_active_conflicts:
-    name: ENERGY V2 aktivní konflikty
+    name: ENERGY V2 aktivni konflikty
+    max: 255
+
+  energy_v2_last_evaluation_error:
+    name: ENERGY V2 posledni chyba vyhodnoceni
     max: 255
 
 input_datetime:
@@ -79,3 +92,7 @@ input_datetime:
     has_date: true
     has_time: true
 
+  energy_v2_last_successful_evaluation:
+    name: ENERGY V2 posledni uspesne vyhodnoceni
+    has_date: true
+    has_time: true

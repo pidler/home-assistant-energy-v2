@@ -27,6 +27,18 @@ def test_parse_float_negative_power() -> None:
     assert parse_float_state("-10482") == -10482.0
 
 
+def test_parse_float_nan_rejected() -> None:
+    assert parse_float_state("NaN") is None
+
+
+def test_parse_float_positive_infinity_rejected() -> None:
+    assert parse_float_state("inf") is None
+
+
+def test_parse_float_negative_infinity_rejected() -> None:
+    assert parse_float_state("-inf") is None
+
+
 def test_parse_bool_on_off() -> None:
     assert parse_bool_state("on") is True
     assert parse_bool_state("off") is False

@@ -31,9 +31,57 @@ ENTITY_IDS: dict[str, str] = {
     "energy_v2_last_decision": "input_text.energy_v2_last_decision",
     "energy_v2_active_conflicts": "input_text.energy_v2_active_conflicts",
     "energy_v2_heartbeat": "input_datetime.energy_v2_heartbeat",
+    "energy_v2_last_successful_evaluation": "input_datetime.energy_v2_last_successful_evaluation",
+    "energy_v2_last_evaluation_error": "input_text.energy_v2_last_evaluation_error",
+    "energy_v2_app_status": "input_select.energy_v2_app_status",
     "energy_v2_deye_fv_ledger": "input_number.energy_v2_deye_fv_ledger",
     "energy_v2_solax_fv_ledger": "input_number.energy_v2_solax_fv_ledger",
 }
+
+REQUIRED_TELEMETRY_KEYS: tuple[str, ...] = (
+    "solax_soc",
+    "solax_battery_power",
+    "solax_pv_power",
+    "solax_house_load",
+    "solax_grid_import",
+    "solax_grid_export",
+    "deye_soc",
+    "deye_battery_power",
+    "deye_battery_state",
+    "deye_grid_power",
+    "deye_external_power",
+    "deye_device_state",
+    "deye_connection",
+    "buy_price",
+    "sell_price",
+    "deye_grid_charging",
+    "deye_export_surplus",
+)
+
+OPTIONAL_TELEMETRY_KEYS: tuple[str, ...] = ("future_sell_rank",)
+
+ENERGY_V2_HELPER_KEYS: tuple[str, ...] = (
+    "energy_v2_enabled",
+    "energy_v2_shadow_mode",
+    "energy_v2_export_enabled",
+    "energy_v2_service_mode",
+    "energy_v2_requested_mode",
+    "energy_v2_actual_mode",
+    "energy_v2_last_fault",
+    "energy_v2_last_decision",
+    "energy_v2_active_conflicts",
+    "energy_v2_heartbeat",
+    "energy_v2_last_successful_evaluation",
+    "energy_v2_last_evaluation_error",
+    "energy_v2_app_status",
+    "energy_v2_deye_fv_ledger",
+    "energy_v2_solax_fv_ledger",
+)
+
+LEGACY_MASTER_HELPER_KEYS: tuple[str, ...] = (
+    "legacy_enabled",
+    "current_energy_trading_enabled",
+)
 
 SOLAX_BATTERY_CHARGING_POSITIVE = True
 DEYE_BATTERY_DISCHARGING_POSITIVE = True

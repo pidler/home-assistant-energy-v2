@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from apps.energy_v2.models import TelemetrySnapshot, ValidationResult
-from apps.energy_v2.safety import find_active_conflicts, safe_to_enable, validate_telemetry
+from apps.energy_v2.safety import find_active_conflicts, find_missing_entities, safe_to_enable, validate_telemetry
 
 
 def snapshot(**overrides: object) -> TelemetrySnapshot:
@@ -50,6 +50,24 @@ def test_missing_soc_invalid() -> None:
     assert "DEYE SOC is missing" in result.reasons
 
 
+def test_solax_soc_below_zero_invalid() -> None:
+    result = validate_telemetry(snapshot(solax_soc_pct=-0.1))
+    assert not result.valid
+    assert any("SolaX SOC is outside" in reason for reason in result.reasons)
+
+
+def test_deye_soc_above_100_invalid() -> None:
+    result = validate_telemetry(snapshot(deye_soc_pct=100.1))
+    assert not result.valid
+    assert any("DEYE SOC is outside" in reason for reason in result.reasons)
+
+
+def test_future_sell_rank_below_one_invalid_when_available() -> None:
+    result = validate_telemetry(snapshot(future_sell_rank=0.0))
+    assert not result.valid
+    assert any("Future sell rank is below 1" in reason for reason in result.reasons)
+
+
 def test_all_safe_valid() -> None:
     assert validate_telemetry(snapshot()).valid
 
@@ -62,12 +80,22 @@ def test_active_conflicts_detected() -> None:
     assert conflicts == ("automation.a",)
 
 
+def test_missing_entities_detected() -> None:
+    missing = find_missing_entities(
+        {"sensor.present": {"state": "1"}, "sensor.missing": None},
+        ("sensor.present", "sensor.missing"),
+    )
+    assert missing == ("sensor.missing",)
+
+
 def test_safe_to_enable_blocks_legacy_system() -> None:
     result = safe_to_enable(
         ValidationResult(True, ()),
         legacy_enabled=True,
         current_system_enabled=False,
         active_conflicts=(),
+        missing_required_entities=(),
+        missing_conflicting_automations=(),
         service_mode=False,
     )
     assert not result.valid
@@ -80,7 +108,37 @@ def test_safe_to_enable_blocks_active_conflict() -> None:
         legacy_enabled=False,
         current_system_enabled=False,
         active_conflicts=("automation.a",),
+        missing_required_entities=(),
+        missing_conflicting_automations=(),
         service_mode=False,
     )
     assert not result.valid
     assert any("Conflicting" in reason for reason in result.reasons)
+
+
+def test_safe_to_enable_blocks_missing_required_entity() -> None:
+    result = safe_to_enable(
+        ValidationResult(True, ()),
+        legacy_enabled=False,
+        current_system_enabled=False,
+        active_conflicts=(),
+        missing_required_entities=("sensor.required",),
+        missing_conflicting_automations=(),
+        service_mode=False,
+    )
+    assert not result.valid
+    assert any("Required entities are missing" in reason for reason in result.reasons)
+
+
+def test_safe_to_enable_blocks_missing_conflicting_automation() -> None:
+    result = safe_to_enable(
+        ValidationResult(True, ()),
+        legacy_enabled=False,
+        current_system_enabled=False,
+        active_conflicts=(),
+        missing_required_entities=(),
+        missing_conflicting_automations=("automation.missing",),
+        service_mode=False,
+    )
+    assert not result.valid
+    assert any("Conflicting automations are missing" in reason for reason in result.reasons)

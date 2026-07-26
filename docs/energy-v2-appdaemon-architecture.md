@@ -1,243 +1,194 @@
-# Energy V2 – AppDaemon architektura pasivní fáze 1
+# Energy V2 - AppDaemon architecture for passive phase 1
 
-Datum: 2026-07-26.
+Date: 2026-07-26.
 
-Tento dokument popisuje lokálně připravený, zatím nenasazený návrh AppDaemon aplikace `energy_v2`. Cílem první fáze je pouze shadow vyhodnocování a diagnostika. Aktivní řízení SolaXu a DEYE je záměrně neimplementované.
+This document describes the local, not-yet-deployed AppDaemon application `energy_v2`.
+Phase 1 is strictly passive: shadow evaluation, safety validation, and diagnostics only.
+It does not physically control SolaX or DEYE.
 
-## 1. Aktuální instalační stav AppDaemonu
+## Current AppDaemon status
 
-Zjištěno přes MCP:
+Observed through Home Assistant MCP during the initial audit:
 
-- AppDaemon add-on je podle entity `update.appdaemon_aktualizovat` instalovaný.
-- Instalovaná verze add-onu: `0.18.5`.
-- `latest_version`: `0.18.5`.
-- Stav update entity: `off`, tedy není dostupná aktualizace.
+- AppDaemon add-on appears installed via `update.appdaemon_aktualizovat`.
+- Add-on version reported by that entity: `0.18.5`.
+- Production AppDaemon filesystem, add-on logs, and runtime Python version were not available through MCP.
 
-Neověřeno:
+Not verified:
 
-- zda add-on aktuálně běží,
-- Python verze uvnitř AppDaemon add-onu,
-- skutečná cesta AppDaemon konfigurace,
-- obsah `/addon_configs/a0d7b954_appdaemon`,
-- obsah `/config` a `/config/apps` uvnitř AppDaemon kontejneru,
-- AppDaemon log.
+- actual AppDaemon process load of `energy_v2`,
+- production AppDaemon import path,
+- production AppDaemon logs,
+- deployment into `/config/apps` or add-on config directories.
 
-Důvod: dostupné MCP nástroje ukazují pouze HA entity/služby a první úroveň YAML konfigurace Home Assistantu. Neposkytují bezpečné čtení ani zápis do AppDaemon add-on adresářů. Nebyly volány `hassio.addon_restart`, `hassio.addon_stdin` ani jiné služby add-onu.
+No Home Assistant add-on service was called and no production deployment was performed.
 
-## 2. Umístění konfiguračních souborů
+## Files
 
-Lokálně připravené soubory v pracovním prostoru:
-
-- `apps/energy_v2/__init__.py`
-- `apps/energy_v2/app.py`
-- `apps/energy_v2/config.py`
-- `apps/energy_v2/models.py`
-- `apps/energy_v2/telemetry.py`
-- `apps/energy_v2/planner.py`
-- `apps/energy_v2/safety.py`
-- `apps/energy_v2/diagnostics.py`
-- `apps/energy_v2.yaml`
-- `config/packages/energy_v2_helpers.yaml`
-
-Tyto soubory nejsou nasazené do Home Assistantu ani do AppDaemon add-onu.
-
-`configuration.yaml` načtený přes MCP neobsahoval `homeassistant: packages`, proto helper package nebyl zapisován do `/config/packages`.
-
-## 3. Verze
-
-- Home Assistant: `2026.7.4`.
-- AppDaemon add-on: `0.18.5` podle update entity.
-- Lokální Python pro testy: `C:\Python314\python.exe`.
-- Python uvnitř AppDaemon add-onu: neověřeno.
-
-## 4. Seznam souborů aplikace
-
-| Soubor | Účel |
+| File | Purpose |
 |---|---|
 | `apps/energy_v2/__init__.py` | package marker |
-| `apps/energy_v2/models.py` | dataclasses a enum režimů |
-| `apps/energy_v2/config.py` | centrální mapa entit, znaménkové konvence, seznam aktuátorů a konfliktů |
-| `apps/energy_v2/telemetry.py` | bezpečné čtení a parsování stavů |
-| `apps/energy_v2/safety.py` | čisté validační funkce |
-| `apps/energy_v2/planner.py` | čistý shadow planner |
-| `apps/energy_v2/diagnostics.py` | formátování diagnostických výstupů |
-| `apps/energy_v2/app.py` | AppDaemon wrapper, listen_state, heartbeat, diagnostické zápisy |
-| `apps/energy_v2.yaml` | nenasazený návrh AppDaemon configu |
-| `config/packages/energy_v2_helpers.yaml` | nenasazený návrh HA helperů |
+| `apps/energy_v2/models.py` | dataclasses and enums |
+| `apps/energy_v2/config.py` | entity map, required/optional groups, owned actuator inventory |
+| `apps/energy_v2/telemetry.py` | state parsing and telemetry snapshot |
+| `apps/energy_v2/safety.py` | pure validation helpers |
+| `apps/energy_v2/planner.py` | pure shadow planner |
+| `apps/energy_v2/diagnostics.py` | diagnostic formatting |
+| `apps/energy_v2/app.py` | AppDaemon wrapper, listeners, heartbeat, diagnostics |
+| `apps/energy_v2.yaml` | proposed AppDaemon app config |
+| `config/packages/energy_v2_helpers.yaml` | proposed Home Assistant helper package |
 
-## 5. Seznam čtených entit
+The AppDaemon config uses:
 
-| Klíč | Entity |
-|---|---|
-| `solax_soc` | `sensor.solax_battery_capacity` |
-| `solax_battery_power` | `sensor.solax_battery_power_charge` |
-| `solax_pv_power` | `sensor.solax_pv_power_total` |
-| `solax_house_load` | `sensor.solax_house_load` |
-| `solax_grid_import` | `sensor.solax_grid_import` |
-| `solax_grid_export` | `sensor.solax_grid_export` |
-| `deye_soc` | `sensor.deye_battery` |
-| `deye_battery_power` | `sensor.deye_battery_power` |
-| `deye_battery_state` | `sensor.deye_battery_state` |
-| `deye_grid_power` | `sensor.deye_grid_power` |
-| `deye_external_power` | `sensor.deye_external_power` |
-| `deye_device_state` | `sensor.deye_device_state` |
-| `deye_connection` | `binary_sensor.deye_connection` |
-| `buy_price` | `sensor.current_buy_electricity_price_15min` |
-| `sell_price` | `sensor.current_sell_electricity_price_15min` |
-| `future_sell_rank` | `sensor.energy_trading_budouci_poradi_prodejni_ceny` |
-| `deye_grid_charging` | `switch.deye_battery_grid_charging` |
-| `deye_export_surplus` | `switch.deye_export_surplus` |
-| `legacy_enabled` | `input_boolean.energy_trading_puvodni_reseni_povoleno` |
-| `current_energy_trading_enabled` | `input_boolean.energy_trading_novy_system_povolen` |
-| `energy_v2_deye_fv_ledger` | `input_number.energy_v2_deye_fv_ledger` |
-| `energy_v2_solax_fv_ledger` | `input_number.energy_v2_solax_fv_ledger` |
-
-## 6. Budoucí vlastněné aktuátory
-
-Energy V2 fáze 1 je pouze sleduje a loguje externí změny. Nezapisuje do nich.
-
-- `select.solax_charger_use_mode`
-- `select.solax_manual_mode_select`
-- `number.solax_battery_discharge_max_current`
-- `number.solax_battery_charge_max_current`
-- `number.solax_remotecontrol_active_power`
-- `number.solax_remotecontrol_autorepeat_duration`
-- `select.solax_remotecontrol_power_control`
-- `button.solax_remotecontrol_trigger`
-- `select.deye_work_mode`
-- `select.deye_time_of_use`
-- `select.deye_ac_coupling`
-- `switch.deye_export_surplus`
-- `switch.deye_battery_grid_charging`
-- `number.deye_grid_max_export_power`
-- `number.deye_export_surplus_power`
-- `number.deye_grid_max_import_power`
-- `number.deye_battery_grid_charging_current`
-
-## 7. Konfliktní automatizace
-
-Konfigurované konflikty:
-
-- `automation.fve_solax_zpet_do_self_use_po_vybiti_deye`
-- `automation.rizeni_solaxu_podle_kalendare_nakup`
-- `automation.rizeni_solaxu_podle_kalendare_prodej`
-- `automation.deye_rizeni_baterie_dle_ceny_nabijeni_vybijeni`
-- `automation.gridcontrol_charge`
-- `automation.spust_vybijeno_deye_v_konkretni_cas`
-- `automation.vypne_vybijeni_deye_a_zapne_self_use_mod_na_solaxu`
-- `automation.zpnout_nabijeni_deye_v_ucity_cas`
-
-Při auditu byla aktivní:
-
-- `automation.fve_solax_zpet_do_self_use_po_vybiti_deye`
-
-## 8. Datový tok
-
-```mermaid
-flowchart LR
-    HA[Home Assistant entity states] --> T[Telemetry reader]
-    T --> V[Safety validation]
-    V --> P[Shadow planner]
-    P --> D[Diagnostics and HA helpers]
-
-    C[Conflict inventory] --> V
-    L[Ledger helpers - read only] --> P
-
-    D -. no physical calls .-> S[SolaX]
-    D -. no physical calls .-> E[DEYE]
+```yaml
+module: energy_v2.app
+class: EnergyV2App
 ```
 
-## 9. Stavový model
+The Python package uses relative imports inside `apps/energy_v2`.
+A stubbed local loader test verifies that `energy_v2.app` imports and exposes `EnergyV2App`
+when `apps/` is on `sys.path` and the AppDaemon API is available.
+Actual production loading by a running AppDaemon instance is still not verified.
 
-`Mode` v `models.py`:
+## Required and optional entities
 
-- `DISABLED`
+Required telemetry:
+
+- SolaX SOC, battery power, PV power, house load, grid import, grid export
+- DEYE SOC, battery power, battery state, grid power, external power, device state, connection
+- buy price, sell price
+- DEYE grid charging switch state
+- DEYE export switch state
+
+Optional telemetry:
+
+- `future_sell_rank`
+
+Required helpers:
+
+- `input_boolean.energy_v2_enabled`
+- `input_boolean.energy_v2_shadow_mode`
+- `input_boolean.energy_v2_export_enabled`
+- `input_boolean.energy_v2_service_mode`
+- `input_select.energy_v2_requested_mode`
+- `input_select.energy_v2_actual_mode`
+- `input_select.energy_v2_app_status`
+- `input_text.energy_v2_last_fault`
+- `input_text.energy_v2_last_decision`
+- `input_text.energy_v2_active_conflicts`
+- `input_text.energy_v2_last_evaluation_error`
+- `input_datetime.energy_v2_heartbeat`
+- `input_datetime.energy_v2_last_successful_evaluation`
+- `input_number.energy_v2_deye_fv_ledger`
+- `input_number.energy_v2_solax_fv_ledger`
+
+Required legacy master helpers:
+
+- `input_boolean.energy_trading_puvodni_reseni_povoleno`
+- `input_boolean.energy_trading_novy_system_povolen`
+
+Configured conflicting automations are treated as required for safety diagnostics. A missing
+conflicting automation is not silently interpreted as off; it is reported in
+`input_text.energy_v2_active_conflicts` as `missing_conflict:<entity_id>` and blocks safe enable.
+
+Future owned actuators are optional in phase 1. Their existence is checked and missing ones are
+reported as `missing_actuator:<entity_id>`, but phase 1 does not write to them.
+
+## Runtime diagnostics
+
+Heartbeat is process liveness only and is not treated as proof of a healthy shadow controller.
+
+Diagnostics written by the app:
+
+- `input_datetime.energy_v2_heartbeat`: periodic process heartbeat
+- `input_datetime.energy_v2_last_successful_evaluation`: last completed shadow evaluation
+- `input_text.energy_v2_last_evaluation_error`: last shadow tick failure or safety/config error
+- `input_select.energy_v2_app_status`: `STARTING`, `HEALTHY`, `DEGRADED`, `CONFIG_ERROR`
+- `input_select.energy_v2_requested_mode`: requested shadow mode or `DISABLED`
+- `input_select.energy_v2_actual_mode`: always `DISABLED` in phase 1
+- `input_text.energy_v2_last_fault`: last enable rejection
+- `input_text.energy_v2_last_decision`: last diagnostic decision text
+- `input_text.energy_v2_active_conflicts`: active or missing conflict diagnostics plus optional missing items
+
+If `input_boolean.energy_v2_shadow_mode` is `off`:
+
+- `requested_mode` is set to `DISABLED`,
+- `actual_mode` is set to `DISABLED`,
+- no active trading recommendation is published,
+- heartbeat and basic diagnostics continue.
+
+## Safety validation
+
+Telemetry validation rejects:
+
+- missing required telemetry,
+- non-finite numeric values (`NaN`, `inf`, `-inf`),
+- SolaX SOC outside 0-100%,
+- DEYE SOC outside 0-100%,
+- `future_sell_rank < 1` when that optional entity is available,
+- DEYE disconnected or device state other than `Normal`.
+
+Negative power values remain valid because SolaX and DEYE use different sign conventions.
+
+Safe enable additionally blocks:
+
+- service mode,
+- missing required entities,
+- missing conflicting automations,
+- active legacy master helpers,
+- active conflicting automations.
+
+Phase 1 may turn off only its own `input_boolean.energy_v2_enabled` when enabled state is unsafe.
+It does not disable legacy automations automatically.
+
+## Shadow planner
+
+`plan_shadow_mode(...)` is a pure function. It can recommend:
+
+- `FAULT`
 - `IDLE`
 - `PV_CHARGE_DEYE`
 - `EXPORT_DEYE`
 - `EXPORT_SOLAX`
-- `FAULT`
-- `SERVICE`
 
-Helper návrh:
+The recommendation is diagnostic only. `actual_mode` remains `DISABLED`.
 
-- `input_select.energy_v2_requested_mode`
-- `input_select.energy_v2_actual_mode`
+Grid Charge is intentionally absent from phase 1.
+Ledger helpers are read only; no ledger calculation or mutation is implemented.
 
-V první fázi zůstává skutečný režim vždy `DISABLED`. Planner může pouze doporučit požadovaný režim.
+## Physical control boundary
 
-## 10. Shadow planner
+No physical control path was added.
 
-Čistá funkce:
-
-```python
-plan_shadow_mode(...)
-```
-
-Logika:
-
-1. nevalidní telemetrie → `FAULT`,
-2. DEYE ledger + povolený export + vysoká cena/rank + SOC nad minimem → `EXPORT_DEYE`,
-3. SolaX ledger + povolený export + vysoká cena/rank + SOC nad minimem → `EXPORT_SOLAX`,
-4. konzervativní FV přebytek + SolaX SOC nad startem + DEYE SOC pod maximem + grid charging off → `PV_CHARGE_DEYE`,
-5. jinak `IDLE`.
-
-Konzervativní přebytek:
-
-```python
-pv_surplus_w = solax_pv_power_w - max(solax_house_load_w, 0.0)
-```
-
-Záporný `sensor.solax_house_load` tedy nezvyšuje přebytek.
-
-## 11. Bezpečnostní omezení fáze 1
-
-Aktivní řízení SolaXu: neimplementováno
-
-Aktivní řízení DEYE: neimplementováno
-
-PV Charge: pouze doporučení
-
-Export DEYE: pouze doporučení
-
-Export SolaX: pouze doporučení
-
-Ledger: pouze připravené helpery, bez automatické aktualizace
-
-Grid Charge: neimplementován a nebude součástí obchodního systému
-
-Metoda:
+`execute_mode()` is intentionally implemented as:
 
 ```python
 def execute_mode(self, mode: Mode) -> None:
     raise RuntimeError("Physical control is intentionally disabled in Energy V2 phase 1")
 ```
 
-není nikde volaná.
+The method is not called by the application.
 
-Aplikace zapisuje pouze do nových diagnostických helperů:
+The only writes are to Energy V2 diagnostic helpers and, on unsafe enable, to
+`input_boolean.energy_v2_enabled`.
 
-- `input_select.energy_v2_requested_mode`
-- `input_select.energy_v2_actual_mode`
-- `input_text.energy_v2_last_fault`
-- `input_text.energy_v2_last_decision`
-- `input_text.energy_v2_active_conflicts`
-- `input_datetime.energy_v2_heartbeat`
+## Verification levels
 
-Při nebezpečném zapnutí může vypnout pouze vlastní `input_boolean.energy_v2_enabled`.
+The repository distinguishes these checks:
 
-Do ledger helperů nezapisuje.
+- Python syntax check: `python -m compileall apps tests`
+- Unit tests: pure telemetry, safety, and planner tests
+- Stubbed AppDaemon import test: `tests/test_app.py` injects a fake
+  `appdaemon.plugins.hass.hassapi.Hass`, imports `apps.energy_v2.app`, verifies `EnergyV2App`,
+  and exercises selected runtime paths without Home Assistant, AppDaemon, token, or network.
+- Actual AppDaemon load: not verified yet; requires deploying into the real AppDaemon add-on and
+  checking its logs.
+- Production deployment: not performed.
 
-## 12. Známé nejasnosti
+GitHub Actions run syntax check, `ruff check`, `ruff format --check`, and pytest.
 
-1. AppDaemon souborový systém nebyl dostupný přes MCP.
-2. Nebylo ověřeno, zda AppDaemon add-on běží.
-3. Nebyla ověřena Python verze uvnitř add-onu.
-4. Nebyl ověřen AppDaemon log.
-5. Node-RED flow nebylo dostupné, takže další zápisové cesty nelze vyloučit.
-6. HA helper package nebyl nasazen, protože `configuration.yaml` neobsahuje aktivní packages.
+## Next step
 
-## 13. Další implementační krok
-
-Společný audit vytvořeného AppDaemon kódu, shadow rozhodnutí a inventáře konfliktů před implementací ledgeru DEYE.
-
+Before phase 2, deploy the package to a test AppDaemon environment, verify the actual AppDaemon
+module loading path and logs, then keep shadow mode enabled long enough to compare recommendations
+against the existing system without allowing physical control.

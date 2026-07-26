@@ -28,7 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest ruff
 
-      - name: Syntax check
+      - name: Python syntax check
         run: python -m compileall apps tests
 
       - name: Ruff lint
@@ -37,6 +37,5 @@ jobs:
       - name: Ruff format check
         run: ruff format --check apps tests
 
-      - name: Unit tests
+      - name: Unit and stubbed AppDaemon import tests
         run: pytest
-

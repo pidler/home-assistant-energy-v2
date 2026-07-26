@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .models import Mode, PlannerDecision
+from .models import AppStatus, Mode, PlannerDecision
 
 
 def compact_reasons(reasons: tuple[str, ...], max_len: int = 255) -> str:
@@ -25,3 +25,7 @@ def heartbeat_value() -> str:
 
 def mode_value(mode: Mode) -> str:
     return mode.value
+
+
+def app_status_value(status: AppStatus) -> str:
+    return status.value
