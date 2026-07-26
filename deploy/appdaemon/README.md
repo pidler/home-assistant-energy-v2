@@ -1,6 +1,7 @@
 # ENERGY V2 AppDaemon deployment package
 
-This directory is a copy-ready package for the passive ENERGY V2 phase 1 AppDaemon app.
+This directory is a copy-ready package for the passive ENERGY V2 AppDaemon app.
+Phase 2 adds summer flow monitoring diagnostics only.
 
 Do not restart Home Assistant Core for this step. Reload or restart only the AppDaemon add-on
 after Home Assistant helpers already exist and have been verified.
@@ -53,5 +54,8 @@ environment.
    - `input_select.energy_v2_actual_mode = DISABLED`,
    - `input_select.energy_v2_requested_mode = DISABLED`,
    - `input_boolean.energy_v2_safe_to_enable = off` while legacy/conflicting systems remain active.
+   - `input_select.energy_v2_flow_state` updates from `UNKNOWN` when telemetry is valid.
+   - `input_text.energy_v2_flow_summary` contains current passive flow diagnostics.
 
-Do not turn on `input_boolean.energy_v2_enabled` during phase 1 deployment verification.
+Do not turn on `input_boolean.energy_v2_enabled` during phase 2 deployment verification.
+Do not deploy phase 2 to production before code review.

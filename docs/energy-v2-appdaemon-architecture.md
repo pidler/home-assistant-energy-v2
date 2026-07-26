@@ -1,27 +1,27 @@
-# Energy V2 - AppDaemon architecture for passive phase 1
+# Energy V2 - AppDaemon architecture
 
 Date: 2026-07-26.
 
-This document describes the local, not-yet-deployed AppDaemon application `energy_v2`.
-Phase 1 is strictly passive: shadow evaluation, safety validation, and diagnostics only.
-It does not physically control SolaX or DEYE.
+This document describes the AppDaemon application `energy_v2`.
+Phase 1 was passively deployed and validated. Phase 2 keeps the same shadow-only safety boundary
+and adds summer flow monitoring diagnostics.
 
 ## Current AppDaemon status
 
-Observed through Home Assistant MCP during the initial audit:
+Phase 1 status after PR #1:
 
-- AppDaemon add-on appears installed via `update.appdaemon_aktualizovat`.
-- Add-on version reported by that entity: `0.18.5`.
-- Production AppDaemon filesystem, add-on logs, and runtime Python version were not available through MCP.
+- passive AppDaemon deployment was completed,
+- the application loaded successfully,
+- production telemetry was valid,
+- no physical inverter control was implemented,
+- `safe_to_enable` remained blocked by the legacy system and a conflicting automation.
 
-Not verified:
+Phase 2 status in this branch:
 
-- actual AppDaemon process load of `energy_v2`,
-- production AppDaemon import path,
-- production AppDaemon logs,
-- deployment into `/config/apps` or add-on config directories.
-
-No Home Assistant add-on service was called and no production deployment was performed.
+- local code only,
+- not deployed to production,
+- not loaded by production AppDaemon,
+- intended next step is code review and then passive AppDaemon deployment.
 
 ## Files
 
@@ -31,6 +31,7 @@ No Home Assistant add-on service was called and no production deployment was per
 | `apps/energy_v2/models.py` | dataclasses and enums |
 | `apps/energy_v2/config.py` | entity map, required/optional groups, owned actuator inventory |
 | `apps/energy_v2/telemetry.py` | state parsing and telemetry snapshot |
+| `apps/energy_v2/flow.py` | sign conventions, flow snapshot, flow classification, debounce |
 | `apps/energy_v2/safety.py` | pure validation helpers |
 | `apps/energy_v2/planner.py` | pure shadow planner |
 | `apps/energy_v2/diagnostics.py` | diagnostic formatting |
@@ -71,9 +72,15 @@ Required helpers:
 - `input_boolean.energy_v2_export_enabled`
 - `input_boolean.energy_v2_service_mode`
 - `input_boolean.energy_v2_safe_to_enable`
+- `input_select.energy_v2_strategy`
 - `input_select.energy_v2_requested_mode`
 - `input_select.energy_v2_actual_mode`
 - `input_select.energy_v2_app_status`
+- `input_select.energy_v2_flow_state`
+- `input_text.energy_v2_flow_summary`
+- `input_text.energy_v2_flow_warning`
+- `input_text.energy_v2_flow_violation`
+- `input_datetime.energy_v2_last_flow_violation`
 - `input_text.energy_v2_last_fault`
 - `input_text.energy_v2_last_decision`
 - `input_text.energy_v2_active_conflicts`
@@ -112,6 +119,12 @@ Diagnostics written by the app:
 - `input_text.energy_v2_last_fault`: last enable rejection
 - `input_text.energy_v2_last_decision`: last diagnostic decision text
 - `input_text.energy_v2_active_conflicts`: active or missing conflict diagnostics plus optional missing items
+- `input_select.energy_v2_strategy`: selected operational strategy
+- `input_select.energy_v2_flow_state`: current passive flow classification
+- `input_text.energy_v2_flow_summary`: compact current flow snapshot
+- `input_text.energy_v2_flow_warning`: persistent or transient flow warnings
+- `input_text.energy_v2_flow_violation`: persistent flow violations
+- `input_datetime.energy_v2_last_flow_violation`: last time a persistent flow violation was seen
 
 If `input_boolean.energy_v2_shadow_mode` is `off`:
 
@@ -164,8 +177,21 @@ It does not disable legacy automations automatically.
 
 The recommendation is diagnostic only. `actual_mode` remains `DISABLED`.
 
-Grid Charge is intentionally absent from phase 1.
+In phase 2 the planner also receives the current flow state, warning flag, and violation flag.
+An active flow violation makes the shadow recommendation `FAULT`; with Energy V2 disabled,
+`requested_mode` and `actual_mode` remain `DISABLED`.
+
+Grid Charge is intentionally absent.
 Ledger helpers are read only; no ledger calculation or mutation is implemented.
+
+## Summer flow monitoring
+
+Phase 2 implements `SUMMER_NO_GRID_CHARGE` diagnostics. It does not track historical battery
+energy origin. It evaluates only current telemetry and classifies physical flows as described in
+`docs/phase-2-summer-flow-monitoring.md`.
+
+`WINTER_GRID_OPTIMIZATION` and `SERVICE` are accepted strategy helper values but are not
+implemented in phase 2; they return a passive `DISABLED` recommendation.
 
 ## Physical control boundary
 
