@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
+
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - exercised only on Python < 3.11
+    from enum import Enum
+
+    class StrEnum(str, Enum):  # noqa: UP042
+        pass
 
 
 class Mode(StrEnum):

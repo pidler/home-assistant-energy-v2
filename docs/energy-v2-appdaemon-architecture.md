@@ -70,6 +70,7 @@ Required helpers:
 - `input_boolean.energy_v2_shadow_mode`
 - `input_boolean.energy_v2_export_enabled`
 - `input_boolean.energy_v2_service_mode`
+- `input_boolean.energy_v2_safe_to_enable`
 - `input_select.energy_v2_requested_mode`
 - `input_select.energy_v2_actual_mode`
 - `input_select.energy_v2_app_status`
@@ -91,8 +92,9 @@ Configured conflicting automations are treated as required for safety diagnostic
 conflicting automation is not silently interpreted as off; it is reported in
 `input_text.energy_v2_active_conflicts` as `missing_conflict:<entity_id>` and blocks safe enable.
 
-Future owned actuators are optional in phase 1. Their existence is checked and missing ones are
-reported as `missing_actuator:<entity_id>`, but phase 1 does not write to them.
+Future owned actuators are passive in phase 1: their existence is checked and missing ones are
+reported as `missing_actuator:<entity_id>`. A missing owned actuator blocks
+`input_boolean.energy_v2_safe_to_enable`, but phase 1 still does not write to that actuator.
 
 ## Runtime diagnostics
 
@@ -106,6 +108,7 @@ Diagnostics written by the app:
 - `input_select.energy_v2_app_status`: `STARTING`, `HEALTHY`, `DEGRADED`, `CONFIG_ERROR`
 - `input_select.energy_v2_requested_mode`: requested shadow mode or `DISABLED`
 - `input_select.energy_v2_actual_mode`: always `DISABLED` in phase 1
+- `input_boolean.energy_v2_safe_to_enable`: safety readiness, independent from process health
 - `input_text.energy_v2_last_fault`: last enable rejection
 - `input_text.energy_v2_last_decision`: last diagnostic decision text
 - `input_text.energy_v2_active_conflicts`: active or missing conflict diagnostics plus optional missing items
@@ -135,8 +138,16 @@ Safe enable additionally blocks:
 - service mode,
 - missing required entities,
 - missing conflicting automations,
+- missing future owned actuator entities,
 - active legacy master helpers,
 - active conflicting automations.
+
+`input_boolean.energy_v2_safe_to_enable` is set to `on` only when these safety checks pass.
+It does not trigger any physical control in phase 1.
+
+If an Energy V2 helper is missing, the app logs a configuration error and skips the service call
+for that missing helper. This prevents one missing diagnostic helper from causing a chain of
+additional write failures.
 
 Phase 1 may turn off only its own `input_boolean.energy_v2_enabled` when enabled state is unsafe.
 It does not disable legacy automations automatically.
@@ -171,6 +182,10 @@ The method is not called by the application.
 
 The only writes are to Energy V2 diagnostic helpers and, on unsafe enable, to
 `input_boolean.energy_v2_enabled`.
+
+`Mode` and `AppStatus` use `enum.StrEnum` when available. The code includes a compatibility
+fallback equivalent to `class StrEnum(str, Enum)` for Python older than 3.11. Tests verify the
+string enum semantics used by the application.
 
 ## Verification levels
 

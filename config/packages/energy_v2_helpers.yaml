@@ -15,6 +15,10 @@ input_boolean:
     name: ENERGY V2 servisni rezim
     initial: false
 
+  energy_v2_safe_to_enable:
+    name: ENERGY V2 bezpecne povolit
+    initial: false
+
 input_select:
   energy_v2_requested_mode:
     name: ENERGY V2 pozadovany rezim

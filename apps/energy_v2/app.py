@@ -53,10 +53,12 @@ class EnergyV2App(hass.Hass):
         self._last_fault_text = ""
         self._missing_required_entities: tuple[str, ...] = ()
         self._missing_optional_entities: tuple[str, ...] = ()
+        self._missing_energy_v2_helpers: tuple[str, ...] = ()
         self._missing_conflicting_automations: tuple[str, ...] = ()
         self._missing_owned_actuators: tuple[str, ...] = ()
 
         self._info("initializing passive shadow application")
+        self._refresh_energy_v2_helper_existence()
         self._set_helper("energy_v2_app_status", app_status_value(AppStatus.STARTING))
         self._validate_required_entity_configuration()
         self._register_state_listeners()
@@ -121,8 +123,10 @@ class EnergyV2App(hass.Hass):
                 active_conflicts,
                 self._missing_required_entities,
                 self._missing_conflicting_automations,
+                self._missing_owned_actuators,
                 service_mode,
             )
+            self._set_safe_to_enable_helper(enable_validation.valid)
 
             if shadow_mode_enabled:
                 decision = plan_shadow_mode(
@@ -213,6 +217,9 @@ class EnergyV2App(hass.Hass):
 
     def _set_helper(self, key: str, value: str) -> None:
         entity_id = self.entity_ids[key]
+        if entity_id in self._missing_energy_v2_helpers:
+            self._error("refusing to write missing helper %s", entity_id)
+            return
         domain = entity_id.split(".", 1)[0]
         if domain == "input_select":
             self.call_service("input_select/select_option", entity_id=entity_id, option=value)
@@ -220,10 +227,24 @@ class EnergyV2App(hass.Hass):
             self.call_service("input_text/set_value", entity_id=entity_id, value=value[:255])
         elif domain == "input_datetime":
             self.call_service("input_datetime/set_datetime", entity_id=entity_id, datetime=value)
+        elif domain == "input_boolean" and key == "energy_v2_safe_to_enable":
+            service = "input_boolean/turn_on" if value == "on" else "input_boolean/turn_off"
+            self.call_service(service, entity_id=entity_id)
         else:
             self._error("refusing to write unsupported helper domain for %s", entity_id)
 
+    def _set_safe_to_enable_helper(self, safe: bool) -> None:
+        self._set_helper("energy_v2_safe_to_enable", "on" if safe else "off")
+
+    def _refresh_energy_v2_helper_existence(self) -> None:
+        helper_entity_ids = tuple(self.entity_ids[key] for key in ENERGY_V2_HELPER_KEYS)
+        helper_states = {entity_id: self._entity_state_object(entity_id) for entity_id in helper_entity_ids}
+        self._missing_energy_v2_helpers = find_missing_entities(helper_states, helper_entity_ids)
+        if self._missing_energy_v2_helpers:
+            self._error("missing Energy V2 helpers: %s", ", ".join(self._missing_energy_v2_helpers))
+
     def _refresh_entity_existence_diagnostics(self) -> None:
+        self._refresh_energy_v2_helper_existence()
         required_entity_ids = tuple(
             self.entity_ids[key]
             for key in (*REQUIRED_TELEMETRY_KEYS, *ENERGY_V2_HELPER_KEYS, *LEGACY_MASTER_HELPER_KEYS)

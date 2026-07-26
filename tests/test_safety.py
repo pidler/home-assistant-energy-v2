@@ -96,6 +96,7 @@ def test_safe_to_enable_blocks_legacy_system() -> None:
         active_conflicts=(),
         missing_required_entities=(),
         missing_conflicting_automations=(),
+        missing_owned_actuators=(),
         service_mode=False,
     )
     assert not result.valid
@@ -110,6 +111,7 @@ def test_safe_to_enable_blocks_active_conflict() -> None:
         active_conflicts=("automation.a",),
         missing_required_entities=(),
         missing_conflicting_automations=(),
+        missing_owned_actuators=(),
         service_mode=False,
     )
     assert not result.valid
@@ -124,6 +126,7 @@ def test_safe_to_enable_blocks_missing_required_entity() -> None:
         active_conflicts=(),
         missing_required_entities=("sensor.required",),
         missing_conflicting_automations=(),
+        missing_owned_actuators=(),
         service_mode=False,
     )
     assert not result.valid
@@ -138,7 +141,23 @@ def test_safe_to_enable_blocks_missing_conflicting_automation() -> None:
         active_conflicts=(),
         missing_required_entities=(),
         missing_conflicting_automations=("automation.missing",),
+        missing_owned_actuators=(),
         service_mode=False,
     )
     assert not result.valid
     assert any("Conflicting automations are missing" in reason for reason in result.reasons)
+
+
+def test_safe_to_enable_blocks_missing_owned_actuator() -> None:
+    result = safe_to_enable(
+        ValidationResult(True, ()),
+        legacy_enabled=False,
+        current_system_enabled=False,
+        active_conflicts=(),
+        missing_required_entities=(),
+        missing_conflicting_automations=(),
+        missing_owned_actuators=("select.future_actuator",),
+        service_mode=False,
+    )
+    assert not result.valid
+    assert any("Owned actuator entities are missing" in reason for reason in result.reasons)

@@ -56,6 +56,7 @@ def safe_to_enable(
     active_conflicts: tuple[str, ...],
     missing_required_entities: tuple[str, ...],
     missing_conflicting_automations: tuple[str, ...],
+    missing_owned_actuators: tuple[str, ...],
     service_mode: bool,
 ) -> ValidationResult:
     reasons: list[str] = []
@@ -65,6 +66,8 @@ def safe_to_enable(
         reasons.append("Required entities are missing: " + ", ".join(missing_required_entities))
     if missing_conflicting_automations:
         reasons.append("Conflicting automations are missing: " + ", ".join(missing_conflicting_automations))
+    if missing_owned_actuators:
+        reasons.append("Owned actuator entities are missing: " + ", ".join(missing_owned_actuators))
     if not telemetry.valid:
         reasons.extend(telemetry.reasons)
     if legacy_enabled:

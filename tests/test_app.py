@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from apps.energy_v2.config import DEFAULT_CONFLICTING_AUTOMATIONS, ENTITY_IDS, OPTIONAL_TELEMETRY_KEYS, OWNED_ACTUATORS
+from apps.energy_v2.models import Mode
 
 
 class StubHass:
@@ -29,7 +30,11 @@ class StubHass:
     def call_service(self, service: str, **kwargs: Any) -> None:
         self.services.append((service, kwargs))
         entity_id = kwargs["entity_id"]
-        if "option" in kwargs:
+        if service == "input_boolean/turn_on":
+            self.states[entity_id] = "on"
+        elif service == "input_boolean/turn_off":
+            self.states[entity_id] = "off"
+        elif "option" in kwargs:
             self.states[entity_id] = kwargs["option"]
         elif "value" in kwargs:
             self.states[entity_id] = kwargs["value"]
@@ -174,6 +179,21 @@ def test_missing_conflicting_automation_is_diagnostic_and_blocks_enable() -> Non
     assert "Conflicting automations are missing" in helper_value(app, "energy_v2_last_evaluation_error")
 
 
+def test_missing_owned_actuator_is_diagnostic_and_blocks_enable() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    del app.states[OWNED_ACTUATORS[0]]
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert helper_value(app, "energy_v2_requested_mode") == "FAULT"
+    assert helper_value(app, "energy_v2_safe_to_enable") == "off"
+    assert "missing_actuator:" in helper_value(app, "energy_v2_active_conflicts")
+    assert "Owned actuator entities are missing" in helper_value(app, "energy_v2_last_evaluation_error")
+
+
 def test_missing_optional_entity_is_diagnostic_but_not_blocking() -> None:
     module = import_app_module()
     app = module.EnergyV2App()
@@ -186,6 +206,49 @@ def test_missing_optional_entity_is_diagnostic_but_not_blocking() -> None:
 
     assert helper_value(app, "energy_v2_app_status") == "HEALTHY"
     assert "missing_optional:" in helper_value(app, "energy_v2_active_conflicts")
+
+
+def test_missing_diagnostic_helper_is_not_written() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    missing_helper = ENTITY_IDS["energy_v2_last_evaluation_error"]
+    del app.states[missing_helper]
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert all(kwargs["entity_id"] != missing_helper for _service, kwargs in app.services)
+    assert any("refusing to write missing helper" in message for _level, message in app.logs)
+
+
+def test_safe_to_enable_off_when_conflict_active() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[DEFAULT_CONFLICTING_AUTOMATIONS[0]] = "on"
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert helper_value(app, "energy_v2_safe_to_enable") == "off"
+
+
+def test_safe_to_enable_on_with_complete_valid_configuration() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert helper_value(app, "energy_v2_safe_to_enable") == "on"
+
+
+def test_mode_strenum_fallback_semantics() -> None:
+    assert isinstance(Mode.IDLE, str)
+    assert Mode.IDLE == "IDLE"
+    assert Mode.IDLE.value == "IDLE"
 
 
 def test_shadow_tick_failure_keeps_process_heartbeat() -> None:
