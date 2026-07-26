@@ -240,6 +240,24 @@ def test_safe_to_enable_off_when_conflict_active() -> None:
     assert helper_value(app, "energy_v2_last_decision") != "FAULT: Telemetry is not valid (confidence=high)"
     assert "Safe-to-enable blocked:" in helper_value(app, "energy_v2_last_evaluation_error")
     assert DEFAULT_CONFLICTING_AUTOMATIONS[0] in helper_value(app, "energy_v2_last_evaluation_error")
+    assert "Legacy energy_trading system is enabled" not in helper_value(app, "energy_v2_last_evaluation_error")
+
+
+def test_safe_to_enable_error_text_is_not_truncated_when_it_fits() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
+    app.states[ENTITY_IDS["legacy_enabled"]] = "on"
+    app.states[DEFAULT_CONFLICTING_AUTOMATIONS[0]] = "on"
+    app.initialize()
+
+    app._shadow_tick()
+
+    error_text = helper_value(app, "energy_v2_last_evaluation_error")
+    assert "Conflicting automations are active" in error_text
+    assert "Legacy energy_trading system is enabled" in error_text
+    assert "+2 total" not in error_text
 
 
 def test_safe_to_enable_on_with_complete_valid_configuration() -> None:

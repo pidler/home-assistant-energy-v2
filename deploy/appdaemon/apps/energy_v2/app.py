@@ -301,12 +301,17 @@ class EnergyV2App(hass.Hass):
             self._warning("enable rejected: %s", text)
 
     def _evaluation_error_text(self, telemetry: ValidationResult, enable: ValidationResult) -> str:
-        parts: list[str] = []
+        if telemetry.reasons and enable.reasons:
+            parts = (
+                "Invalid telemetry: " + compact_reasons(telemetry.reasons, max_len=110),
+                "Safe-to-enable blocked: " + compact_reasons(enable.reasons, max_len=110),
+            )
+            return compact_reasons(parts)
         if telemetry.reasons:
-            parts.append("Invalid telemetry: " + compact_reasons(telemetry.reasons, max_len=110))
+            return "Invalid telemetry: " + compact_reasons(telemetry.reasons, max_len=236)
         if enable.reasons:
-            parts.append("Safe-to-enable blocked: " + compact_reasons(enable.reasons, max_len=110))
-        return compact_reasons(tuple(parts))
+            return "Safe-to-enable blocked: " + compact_reasons(enable.reasons, max_len=231)
+        return ""
 
     def _info(self, message: str, *args: Any) -> None:
         self.log(f"{self.log_prefix} " + message, *args, level="INFO")
