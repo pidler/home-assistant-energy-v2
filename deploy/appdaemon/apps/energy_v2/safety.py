@@ -26,6 +26,8 @@ def validate_telemetry(snapshot: TelemetrySnapshot) -> ValidationResult:
         reasons.append("SolaX battery power is missing")
     if snapshot.solax_pv_power_w is None:
         reasons.append("SolaX PV power is missing")
+    if snapshot.solax_measured_power_w is None:
+        reasons.append("SolaX measured grid power is missing")
     if snapshot.sell_price is None:
         reasons.append("Sell price is missing")
     if snapshot.future_sell_rank is not None and snapshot.future_sell_rank < 1:
@@ -86,10 +88,15 @@ def _numeric_values(snapshot: TelemetrySnapshot) -> tuple[tuple[str, float | Non
         ("SolaX battery power", snapshot.solax_battery_power_w),
         ("SolaX PV power", snapshot.solax_pv_power_w),
         ("SolaX house load", snapshot.solax_house_load_w),
+        ("SolaX measured grid power", snapshot.solax_measured_power_w),
+        ("SolaX measured power L1", snapshot.solax_measured_power_l1_w),
+        ("SolaX measured power L2", snapshot.solax_measured_power_l2_w),
+        ("SolaX measured power L3", snapshot.solax_measured_power_l3_w),
         ("SolaX grid import", snapshot.solax_grid_import_w),
         ("SolaX grid export", snapshot.solax_grid_export_w),
         ("DEYE SOC", snapshot.deye_soc_pct),
         ("DEYE battery power", snapshot.deye_battery_power_w),
+        ("DEYE raw battery power", snapshot.deye_battery_power_raw_w),
         ("DEYE grid power", snapshot.deye_grid_power_w),
         ("DEYE external power", snapshot.deye_external_power_w),
         ("Buy price", snapshot.buy_price),

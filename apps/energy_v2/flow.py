@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -24,8 +25,8 @@ class SystemParameters:
 @dataclass(frozen=True)
 class SignConventions:
     solax_battery_charging_positive: bool = True
-    deye_battery_discharging_positive: bool = True
-    deye_grid_import_positive: bool = True
+    deye_battery_charging_positive: bool = True
+    grid_export_positive: bool = True
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class FlowThresholds:
     pv_surplus_reserve_w: float = 500.0
     warning_persistence_s: float = 5.0
     violation_persistence_s: float = 10.0
+    telemetry_stale_timeout_s: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ class RollingExportAverage:
     covered_duration_s: float
     window_complete: bool
     stale: bool = False
+    last_sample_age_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -91,7 +94,10 @@ class RollingExportAverageTracker:
     samples: list[ExportSample] = field(default_factory=list)
 
     def add_sample(self, now: datetime, export_w: float) -> RollingExportAverage:
+        if not math.isfinite(export_w):
+            return self.average(now)
         self.samples.append(ExportSample(now, max(export_w, 0.0)))
+        self.samples.sort(key=lambda sample: sample.timestamp)
         self._drop_samples_before(now - timedelta(seconds=self.window_s))
         return self.average(now)
 
@@ -104,7 +110,7 @@ class RollingExportAverageTracker:
         first_timestamp = max(self.samples[0].timestamp, window_start)
         covered_duration_s = max((now - first_timestamp).total_seconds(), 0.0)
         if covered_duration_s <= 0:
-            return RollingExportAverage(0.0, 0.0, False, stale=stale)
+            return RollingExportAverage(0.0, 0.0, False, stale=stale, last_sample_age_s=last_sample_age_s)
 
         energy_ws = 0.0
         relevant_samples = [sample for sample in self.samples if sample.timestamp >= window_start]
@@ -126,6 +132,7 @@ class RollingExportAverageTracker:
             covered_duration_s=covered_duration_s,
             window_complete=covered_duration_s >= self.window_s,
             stale=stale,
+            last_sample_age_s=last_sample_age_s,
         )
 
     def _drop_samples_before(self, cutoff: datetime) -> None:
@@ -141,10 +148,16 @@ class FlowDebouncer:
     solax_to_deye_since: datetime | None = None
     deye_to_solax_since: datetime | None = None
     cross_charging_since: datetime | None = None
+    grid_import_warning_confirmed: bool = False
+    grid_import_violation_confirmed: bool = False
+    solax_to_deye_confirmed: bool = False
+    deye_to_solax_confirmed: bool = False
+    cross_charging_confirmed: bool = False
     transient_import_count: int = 0
     persistent_import_count: int = 0
     solax_to_deye_count: int = 0
     deye_to_solax_count: int = 0
+    cross_charging_count: int = 0
     state_started_at: datetime | None = None
     state_durations_s: dict[FlowState, float] = field(default_factory=dict)
     last_state: FlowState = FlowState.UNKNOWN
@@ -161,48 +174,63 @@ class FlowDebouncer:
             self.grid_import_warning_since = self.grid_import_warning_since or now
             if self._elapsed(self.grid_import_warning_since, now) >= self.thresholds.warning_persistence_s:
                 warnings.append(f"Grid import is persistent: {snapshot.grid_import_w:.0f} W")
-                self.persistent_import_count += 1
+                if not self.grid_import_warning_confirmed:
+                    self.persistent_import_count += 1
+                    self.grid_import_warning_confirmed = True
             else:
                 transients.append(f"Transient grid import: {snapshot.grid_import_w:.0f} W")
                 self.transient_import_count += 1
         else:
             self.grid_import_warning_since = None
+            self.grid_import_warning_confirmed = False
 
         if snapshot.grid_import_w > self.thresholds.grid_import_violation_w:
             self.grid_import_violation_since = self.grid_import_violation_since or now
             if self._elapsed(self.grid_import_violation_since, now) >= self.thresholds.violation_persistence_s:
                 violations.append(f"Grid import violation: {snapshot.grid_import_w:.0f} W")
+                self.grid_import_violation_confirmed = True
         else:
             self.grid_import_violation_since = None
+            self.grid_import_violation_confirmed = False
 
         if instant.state is FlowState.SOLAX_TO_DEYE:
             self.solax_to_deye_since = self.solax_to_deye_since or now
             if self._elapsed(self.solax_to_deye_since, now) >= self.thresholds.violation_persistence_s:
                 violations.append("SolaX battery appears to discharge while DEYE charges")
-                self.solax_to_deye_count += 1
+                if not self.solax_to_deye_confirmed:
+                    self.solax_to_deye_count += 1
+                    self.solax_to_deye_confirmed = True
             else:
                 transients.append("Transient SolaX to DEYE battery flow")
         else:
             self.solax_to_deye_since = None
+            self.solax_to_deye_confirmed = False
 
         if instant.state is FlowState.DEYE_TO_SOLAX:
             self.deye_to_solax_since = self.deye_to_solax_since or now
             if self._elapsed(self.deye_to_solax_since, now) >= self.thresholds.violation_persistence_s:
                 violations.append("DEYE battery appears to discharge while SolaX charges")
-                self.deye_to_solax_count += 1
+                if not self.deye_to_solax_confirmed:
+                    self.deye_to_solax_count += 1
+                    self.deye_to_solax_confirmed = True
             else:
                 transients.append("Transient DEYE to SolaX battery flow")
         else:
             self.deye_to_solax_since = None
+            self.deye_to_solax_confirmed = False
 
         if instant.state is FlowState.CROSS_CHARGING:
             self.cross_charging_since = self.cross_charging_since or now
             if self._elapsed(self.cross_charging_since, now) >= self.thresholds.violation_persistence_s:
                 violations.extend(instant.violations)
+                if not self.cross_charging_confirmed:
+                    self.cross_charging_count += 1
+                    self.cross_charging_confirmed = True
             else:
                 transients.append("Transient export while the other battery charges")
         else:
             self.cross_charging_since = None
+            self.cross_charging_confirmed = False
 
         return FlowAssessment(
             state=instant.state,
@@ -237,28 +265,28 @@ def solax_battery_discharging_power_w(raw_power_w: float, signs: SignConventions
 
 
 def deye_battery_charging_power_w(raw_power_w: float, signs: SignConventions) -> float:
-    return max(-raw_power_w if signs.deye_battery_discharging_positive else raw_power_w, 0.0)
+    return max(raw_power_w if signs.deye_battery_charging_positive else -raw_power_w, 0.0)
 
 
 def deye_battery_discharging_power_w(raw_power_w: float, signs: SignConventions) -> float:
-    return max(raw_power_w if signs.deye_battery_discharging_positive else -raw_power_w, 0.0)
+    return max(-raw_power_w if signs.deye_battery_charging_positive else raw_power_w, 0.0)
 
 
 def grid_import_power_w(raw_power_w: float, signs: SignConventions) -> float:
-    return max(raw_power_w if signs.deye_grid_import_positive else -raw_power_w, 0.0)
+    return max(-raw_power_w if signs.grid_export_positive else raw_power_w, 0.0)
 
 
 def grid_export_power_w(raw_power_w: float, signs: SignConventions) -> float:
-    return max(-raw_power_w if signs.deye_grid_import_positive else raw_power_w, 0.0)
+    return max(raw_power_w if signs.grid_export_positive else -raw_power_w, 0.0)
 
 
 def derive_flow_snapshot(telemetry: TelemetrySnapshot, signs: SignConventions) -> FlowSnapshot:
     solax_battery_power = telemetry.solax_battery_power_w or 0.0
     deye_battery_power = telemetry.deye_battery_power_w or 0.0
-    deye_grid_power = telemetry.deye_grid_power_w or 0.0
+    measured_grid_power = telemetry.solax_measured_power_w or 0.0
     return FlowSnapshot(
-        grid_import_w=grid_import_power_w(deye_grid_power, signs),
-        grid_export_w=grid_export_power_w(deye_grid_power, signs),
+        grid_import_w=grid_import_power_w(measured_grid_power, signs),
+        grid_export_w=grid_export_power_w(measured_grid_power, signs),
         solax_battery_charging_w=solax_battery_charging_power_w(solax_battery_power, signs),
         solax_battery_discharging_w=solax_battery_discharging_power_w(solax_battery_power, signs),
         deye_battery_charging_w=deye_battery_charging_power_w(deye_battery_power, signs),
@@ -401,12 +429,72 @@ def summarize_export_limit(assessment: ExportLimitAssessment, max_len: int = 255
     rolling = assessment.rolling_average
     complete = "complete" if rolling.window_complete else "partial"
     stale = ", stale" if rolling.stale else ""
+    age = "" if rolling.last_sample_age_s is None else f", age={rolling.last_sample_age_s:.0f} s"
     text = (
         f"{assessment.state.value}: instant={assessment.instant_export_w:.0f} W, "
         f"avg15={rolling.average_w:.0f} W, covered={rolling.covered_duration_s:.0f} s "
-        f"({complete}{stale})"
+        f"({complete}{stale}{age})"
     )
     return text[:max_len]
+
+
+def validate_system_parameters(parameters: SystemParameters) -> tuple[str, ...]:
+    reasons: list[str] = []
+    for name, value in parameters.__dict__.items():
+        if not isinstance(value, int | float) or not math.isfinite(float(value)):
+            reasons.append(f"{name} must be a finite number")
+    positive_fields = (
+        "solax_rated_power_w",
+        "solax_battery_capacity_kwh",
+        "deye_rated_power_w",
+        "deye_battery_capacity_kwh",
+        "target_export_limit_w",
+        "legal_export_average_limit_w",
+        "export_average_warning_w",
+        "export_average_window_s",
+        "export_sample_max_age_s",
+    )
+    for name in positive_fields:
+        if getattr(parameters, name) <= 0:
+            reasons.append(f"{name} must be > 0")
+    for name in ("solax_min_soc_pct", "deye_min_soc_pct"):
+        value = getattr(parameters, name)
+        if value < 0 or value > 100:
+            reasons.append(f"{name} must be between 0 and 100")
+    if parameters.target_export_limit_w > parameters.legal_export_average_limit_w:
+        reasons.append("target_export_limit_w must be <= legal_export_average_limit_w")
+    if parameters.export_average_warning_w > parameters.legal_export_average_limit_w:
+        reasons.append("export_average_warning_w must be <= legal_export_average_limit_w")
+    return tuple(reasons)
+
+
+def validate_flow_thresholds(thresholds: FlowThresholds) -> tuple[str, ...]:
+    reasons: list[str] = []
+    for name, value in thresholds.__dict__.items():
+        if not isinstance(value, int | float) or not math.isfinite(float(value)):
+            reasons.append(f"{name} must be a finite number")
+    non_negative_fields = (
+        "grid_import_warning_w",
+        "grid_import_violation_w",
+        "battery_flow_warning_w",
+        "battery_flow_violation_w",
+        "minimum_deye_charge_w",
+        "minimum_export_w",
+        "pv_surplus_reserve_w",
+    )
+    for name in non_negative_fields:
+        if getattr(thresholds, name) < 0:
+            reasons.append(f"{name} must be >= 0")
+    for name in ("warning_persistence_s", "violation_persistence_s", "telemetry_stale_timeout_s"):
+        if getattr(thresholds, name) <= 0:
+            reasons.append(f"{name} must be > 0")
+    if thresholds.grid_import_violation_w < thresholds.grid_import_warning_w:
+        reasons.append("grid_import_violation_w must be >= grid_import_warning_w")
+    if thresholds.battery_flow_violation_w < thresholds.battery_flow_warning_w:
+        reasons.append("battery_flow_violation_w must be >= battery_flow_warning_w")
+    if thresholds.violation_persistence_s < thresholds.warning_persistence_s:
+        reasons.append("violation_persistence_s must be >= warning_persistence_s")
+    return tuple(reasons)
 
 
 def _likely_pv_surplus_charge(snapshot: FlowSnapshot, thresholds: FlowThresholds) -> bool:

@@ -28,6 +28,7 @@ from .flow import (
     FlowDebouncer,
     FlowSnapshot,
     FlowState,
+    FlowThresholds,
     RollingExportAverageTracker,
     SignConventions,
     SystemParameters,
@@ -36,6 +37,8 @@ from .flow import (
     merge_export_limit_assessment,
     summarize_export_limit,
     summarize_flow,
+    validate_flow_thresholds,
+    validate_system_parameters,
 )
 from .models import AppStatus, Mode, PlannerDecision, Strategy, ValidationResult
 from .planner import plan_shadow_mode
@@ -61,19 +64,33 @@ class EnergyV2App(hass.Hass):
             "export_enabled_entity", self.entity_ids["energy_v2_export_enabled"]
         )
         self.conflicting_automations = tuple(self.args.get("conflicting_automations", DEFAULT_CONFLICTING_AUTOMATIONS))
+        self._config_errors: tuple[str, ...] = ()
         self.telemetry = TelemetryReader(self, self.entity_ids)
         self.sign_conventions = SignConventions(
-            solax_battery_charging_positive=bool(self.args.get("solax_battery_charging_positive", True)),
-            deye_battery_discharging_positive=bool(self.args.get("deye_battery_discharging_positive", True)),
-            deye_grid_import_positive=bool(self.args.get("deye_grid_import_positive", True)),
+            solax_battery_charging_positive=self._bool_arg("solax_battery_charging_positive", True),
+            deye_battery_charging_positive=self._bool_arg("deye_battery_charging_positive", True),
+            grid_export_positive=self._bool_arg("grid_export_positive", True),
         )
         self.system_parameters = self._system_parameters_from_args()
-        self.flow_debouncer = FlowDebouncer()
+        self.flow_thresholds = self._flow_thresholds_from_args()
+        self.flow_tick_interval_s = self._flow_tick_interval_from_args()
+        self._config_errors = (
+            *self._config_errors,
+            *validate_system_parameters(self.system_parameters),
+            *validate_flow_thresholds(self.flow_thresholds),
+        )
+        if self._config_errors:
+            self.system_parameters = SystemParameters()
+            self.flow_thresholds = FlowThresholds()
+            self.flow_tick_interval_s = 5
+        self.flow_debouncer = FlowDebouncer(self.flow_thresholds)
         self.export_average_tracker = RollingExportAverageTracker(
             window_s=self.system_parameters.export_average_window_s,
             max_sample_age_s=self.system_parameters.export_sample_max_age_s,
         )
         self._debounce_handle: Any | None = None
+        self._flow_tick_running = False
+        self._shadow_tick_running = False
         self._last_decision: PlannerDecision | None = None
         self._last_conflicts: tuple[str, ...] = ()
         self._last_fault_text = ""
@@ -90,6 +107,7 @@ class EnergyV2App(hass.Hass):
         self._validate_required_entity_configuration()
         self._register_state_listeners()
         self.run_every(self._shadow_tick, "now+5", 15 * 60)
+        self.run_every(self._flow_tick, "now+5", self.flow_tick_interval_s)
         self.run_every(self._heartbeat_tick, "now+10", 10)
         self._set_helper("energy_v2_actual_mode", mode_value(Mode.DISABLED))
         self._set_helper("energy_v2_requested_mode", mode_value(Mode.DISABLED))
@@ -129,6 +147,10 @@ class EnergyV2App(hass.Hass):
 
     def _shadow_tick(self, kwargs: dict[str, Any] | None = None) -> None:
         self._debounce_handle = None
+        if self._shadow_tick_running:
+            self._warning("skipping overlapping shadow planner tick")
+            return
+        self._shadow_tick_running = True
         try:
             self._refresh_entity_existence_diagnostics()
             snapshot = self.telemetry.snapshot()
@@ -145,28 +167,10 @@ class EnergyV2App(hass.Hass):
             export_enabled = parse_bool_state(self.get_state(self.entity_ids["energy_v2_export_enabled"])) is True
             strategy = self._selected_strategy()
 
-            if telemetry_validation.valid:
-                flow_snapshot = derive_flow_snapshot(snapshot, self.sign_conventions)
-                now = datetime.now().astimezone()
-                rolling_export = self.export_average_tracker.add_sample(now, flow_snapshot.grid_export_w)
-                export_limit_assessment = assess_export_limit(
-                    flow_snapshot.grid_export_w,
-                    rolling_export,
-                    self.system_parameters,
-                )
-                flow_assessment = merge_export_limit_assessment(
-                    self.flow_debouncer.assess(flow_snapshot, now),
-                    export_limit_assessment,
-                )
-                self._publish_flow_diagnostics(flow_snapshot, flow_assessment)
-                self._publish_export_limit_diagnostics(export_limit_assessment)
-            else:
-                flow_assessment = FlowAssessment(FlowState.UNKNOWN, warnings=("Telemetry is not valid",))
-                self._publish_invalid_flow_diagnostics(flow_assessment)
-                self._publish_unknown_export_limit_diagnostics()
+            flow_assessment = self._evaluate_flow_monitoring(snapshot, telemetry_validation)
 
             enable_validation = safe_to_enable(
-                telemetry_validation,
+                self._merge_config_validation(telemetry_validation),
                 legacy_enabled,
                 current_enabled,
                 active_conflicts,
@@ -180,7 +184,7 @@ class EnergyV2App(hass.Hass):
             if shadow_mode_enabled:
                 decision = plan_shadow_mode(
                     snapshot,
-                    telemetry_valid=telemetry_validation.valid,
+                    telemetry_valid=telemetry_validation.valid and not self._config_errors,
                     export_enabled=export_enabled,
                     deye_ledger_kwh=parse_float_state(self.get_state(self.entity_ids["energy_v2_deye_fv_ledger"]))
                     or 0.0,
@@ -196,6 +200,8 @@ class EnergyV2App(hass.Hass):
                     strategy=strategy,
                     flow_assessment=flow_assessment,
                 )
+                if self._config_errors:
+                    decision = PlannerDecision(Mode.DISABLED, "Configuration is invalid", "high")
                 decision_text = format_decision(decision)
             else:
                 decision = PlannerDecision(Mode.DISABLED, "Shadow mode is disabled", "high")
@@ -212,10 +218,14 @@ class EnergyV2App(hass.Hass):
 
             if not shadow_mode_enabled:
                 status = AppStatus.CONFIG_ERROR if not enable_validation.valid else AppStatus.HEALTHY
-                error_text = self._evaluation_error_text(telemetry_validation, enable_validation)
+                error_text = self._evaluation_error_text(
+                    self._merge_config_validation(telemetry_validation), enable_validation
+                )
                 self._mark_shadow_disabled_evaluation(status, error_text)
             elif energy_v2_enabled and not enable_validation.valid:
-                fault_text = self._evaluation_error_text(telemetry_validation, enable_validation)
+                fault_text = self._evaluation_error_text(
+                    self._merge_config_validation(telemetry_validation), enable_validation
+                )
                 self._set_helper("energy_v2_requested_mode", mode_value(Mode.FAULT))
                 self._set_helper("energy_v2_actual_mode", mode_value(Mode.DISABLED))
                 self._set_helper("energy_v2_last_fault", fault_text)
@@ -232,7 +242,9 @@ class EnergyV2App(hass.Hass):
                 )
                 self._mark_successful_shadow_evaluation(AppStatus.HEALTHY)
             else:
-                error_text = self._evaluation_error_text(telemetry_validation, enable_validation)
+                error_text = self._evaluation_error_text(
+                    self._merge_config_validation(telemetry_validation), enable_validation
+                )
                 self._mark_successful_shadow_evaluation(
                     AppStatus.HEALTHY,
                     requested_mode=Mode.DISABLED,
@@ -255,6 +267,52 @@ class EnergyV2App(hass.Hass):
             self._set_helper("energy_v2_last_evaluation_error", error_text)
             self._set_helper("energy_v2_app_status", app_status_value(AppStatus.DEGRADED))
             self._error(error_text)
+        finally:
+            self._shadow_tick_running = False
+
+    def _flow_tick(self, kwargs: dict[str, Any] | None = None) -> None:
+        if self._flow_tick_running:
+            self._warning("skipping overlapping passive flow tick")
+            return
+        self._flow_tick_running = True
+        try:
+            snapshot = self.telemetry.snapshot()
+            telemetry_validation = validate_telemetry(snapshot)
+            self._evaluate_flow_monitoring(snapshot, telemetry_validation)
+        except Exception as exc:  # pragma: no cover - AppDaemon runtime guard
+            error_text = f"unexpected flow tick error: {exc!r}"
+            self._set_helper("energy_v2_last_evaluation_error", error_text)
+            self._set_helper("energy_v2_app_status", app_status_value(AppStatus.DEGRADED))
+            self._error(error_text)
+        finally:
+            self._flow_tick_running = False
+
+    def _evaluate_flow_monitoring(
+        self,
+        snapshot: object,
+        telemetry_validation: ValidationResult,
+    ) -> FlowAssessment:
+        if telemetry_validation.valid:
+            flow_snapshot = derive_flow_snapshot(snapshot, self.sign_conventions)
+            now = datetime.now().astimezone()
+            rolling_export = self.export_average_tracker.add_sample(now, flow_snapshot.grid_export_w)
+            export_limit_assessment = assess_export_limit(
+                flow_snapshot.grid_export_w,
+                rolling_export,
+                self.system_parameters,
+            )
+            flow_assessment = merge_export_limit_assessment(
+                self.flow_debouncer.assess(flow_snapshot, now),
+                export_limit_assessment,
+            )
+            self._publish_flow_diagnostics(flow_snapshot, flow_assessment)
+            self._publish_export_limit_diagnostics(export_limit_assessment)
+            self._set_helper("energy_v2_last_valid_export_sample", heartbeat_value())
+        else:
+            flow_assessment = FlowAssessment(FlowState.UNKNOWN, warnings=("Telemetry is not valid",))
+            self._publish_invalid_flow_diagnostics(flow_assessment)
+            self._publish_unknown_export_limit_diagnostics()
+        return flow_assessment
 
     def _heartbeat_tick(self, kwargs: dict[str, Any] | None = None) -> None:
         self._set_helper("energy_v2_heartbeat", heartbeat_value())
@@ -289,6 +347,7 @@ class EnergyV2App(hass.Hass):
             "energy_v2_instant_grid_export_w",
             "energy_v2_rolling_15min_export_w",
             "energy_v2_export_window_covered_s",
+            "energy_v2_export_sample_age_s",
         }:
             self.call_service("input_number/set_value", entity_id=entity_id, value=float(value))
         elif domain == "input_boolean" and key == "energy_v2_safe_to_enable":
@@ -326,29 +385,97 @@ class EnergyV2App(hass.Hass):
         self._set_helper("energy_v2_instant_grid_export_w", f"{assessment.instant_export_w:.3f}")
         self._set_helper("energy_v2_rolling_15min_export_w", f"{assessment.rolling_average.average_w:.3f}")
         self._set_helper("energy_v2_export_window_covered_s", f"{assessment.rolling_average.covered_duration_s:.3f}")
+        if assessment.rolling_average.last_sample_age_s is not None:
+            self._set_helper("energy_v2_export_sample_age_s", f"{assessment.rolling_average.last_sample_age_s:.3f}")
         self._set_helper("energy_v2_export_limit_state", assessment.state.value)
         self._set_helper("energy_v2_export_limit_summary", summarize_export_limit(assessment))
         if assessment.violations:
             self._set_helper("energy_v2_last_export_average_violation", heartbeat_value())
 
     def _publish_unknown_export_limit_diagnostics(self) -> None:
+        average = self.export_average_tracker.average(datetime.now().astimezone())
+        if average.last_sample_age_s is not None:
+            self._set_helper("energy_v2_export_sample_age_s", f"{average.last_sample_age_s:.3f}")
         self._set_helper("energy_v2_export_limit_state", "UNKNOWN")
-        self._set_helper("energy_v2_export_limit_summary", "UNKNOWN: telemetry is not valid")
+        self._set_helper(
+            "energy_v2_export_limit_summary",
+            "UNKNOWN: telemetry is not valid; numeric export helpers contain last known values",
+        )
 
     def _system_parameters_from_args(self) -> SystemParameters:
+        defaults = SystemParameters()
         return SystemParameters(
-            solax_rated_power_w=float(self.args.get("solax_rated_power_w", 12_000.0)),
-            solax_battery_capacity_kwh=float(self.args.get("solax_battery_capacity_kwh", 24.0)),
-            solax_min_soc_pct=float(self.args.get("solax_min_soc_pct", 10.0)),
-            deye_rated_power_w=float(self.args.get("deye_rated_power_w", 12_000.0)),
-            deye_battery_capacity_kwh=float(self.args.get("deye_battery_capacity_kwh", 32.0)),
-            deye_min_soc_pct=float(self.args.get("deye_min_soc_pct", 10.0)),
-            target_export_limit_w=float(self.args.get("target_export_limit_w", 9_800.0)),
-            legal_export_average_limit_w=float(self.args.get("legal_export_average_limit_w", 10_000.0)),
-            export_average_warning_w=float(self.args.get("export_average_warning_w", 9_800.0)),
-            export_average_window_s=float(self.args.get("export_average_window_s", 900.0)),
-            export_sample_max_age_s=float(self.args.get("export_sample_max_age_s", 120.0)),
+            solax_rated_power_w=self._float_arg("solax_rated_power_w", defaults.solax_rated_power_w),
+            solax_battery_capacity_kwh=self._float_arg(
+                "solax_battery_capacity_kwh", defaults.solax_battery_capacity_kwh
+            ),
+            solax_min_soc_pct=self._float_arg("solax_min_soc_pct", defaults.solax_min_soc_pct),
+            deye_rated_power_w=self._float_arg("deye_rated_power_w", defaults.deye_rated_power_w),
+            deye_battery_capacity_kwh=self._float_arg("deye_battery_capacity_kwh", defaults.deye_battery_capacity_kwh),
+            deye_min_soc_pct=self._float_arg("deye_min_soc_pct", defaults.deye_min_soc_pct),
+            target_export_limit_w=self._float_arg("target_export_limit_w", defaults.target_export_limit_w),
+            legal_export_average_limit_w=self._float_arg(
+                "legal_export_average_limit_w", defaults.legal_export_average_limit_w
+            ),
+            export_average_warning_w=self._float_arg("export_average_warning_w", defaults.export_average_warning_w),
+            export_average_window_s=self._float_arg("export_average_window_s", defaults.export_average_window_s),
+            export_sample_max_age_s=self._float_arg("export_sample_max_age_s", defaults.export_sample_max_age_s),
         )
+
+    def _flow_thresholds_from_args(self) -> FlowThresholds:
+        defaults = FlowThresholds()
+        args = self.args.get("flow_thresholds", {})
+        if not isinstance(args, dict):
+            self._config_errors = (*self._config_errors, "flow_thresholds must be a mapping")
+            args = {}
+        return FlowThresholds(
+            grid_import_warning_w=self._float_arg("grid_import_warning_w", defaults.grid_import_warning_w, source=args),
+            grid_import_violation_w=self._float_arg(
+                "grid_import_violation_w", defaults.grid_import_violation_w, source=args
+            ),
+            battery_flow_warning_w=self._float_arg(
+                "battery_flow_warning_w", defaults.battery_flow_warning_w, source=args
+            ),
+            battery_flow_violation_w=self._float_arg(
+                "battery_flow_violation_w", defaults.battery_flow_violation_w, source=args
+            ),
+            minimum_deye_charge_w=self._float_arg("minimum_deye_charge_w", defaults.minimum_deye_charge_w, source=args),
+            minimum_export_w=self._float_arg("minimum_export_w", defaults.minimum_export_w, source=args),
+            pv_surplus_reserve_w=self._float_arg("pv_surplus_reserve_w", defaults.pv_surplus_reserve_w, source=args),
+            warning_persistence_s=self._float_arg("warning_persistence_s", defaults.warning_persistence_s, source=args),
+            violation_persistence_s=self._float_arg(
+                "violation_persistence_s", defaults.violation_persistence_s, source=args
+            ),
+            telemetry_stale_timeout_s=self._float_arg(
+                "telemetry_stale_timeout_s", defaults.telemetry_stale_timeout_s, source=args
+            ),
+        )
+
+    def _flow_tick_interval_from_args(self) -> int:
+        value = self._float_arg("flow_tick_interval_s", 5.0)
+        if value < 1:
+            self._config_errors = (*self._config_errors, "flow_tick_interval_s must be >= 1")
+            return 5
+        return int(value)
+
+    def _float_arg(self, key: str, default: float, source: dict[str, Any] | None = None) -> float:
+        raw = (source if source is not None else self.args).get(key, default)
+        value = parse_float_state(raw)
+        if value is None:
+            self._config_errors = (*self._config_errors, f"{key} must be a finite number")
+            return default
+        return value
+
+    def _bool_arg(self, key: str, default: bool) -> bool:
+        value = parse_bool_state(self.args.get(key, default))
+        if value is None:
+            self._config_errors = (*self._config_errors, f"{key} must be boolean")
+            return default
+        return value
+
+    def _merge_config_validation(self, telemetry_validation: ValidationResult) -> ValidationResult:
+        reasons = (*telemetry_validation.reasons, *self._config_errors)
+        return ValidationResult(valid=not reasons, reasons=reasons)
 
     def _refresh_energy_v2_helper_existence(self) -> None:
         helper_entity_ids = tuple(self.entity_ids[key] for key in ENERGY_V2_HELPER_KEYS)

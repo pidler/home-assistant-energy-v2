@@ -63,11 +63,16 @@ class TelemetrySnapshot:
     solax_battery_power_w: float | None
     solax_pv_power_w: float | None
     solax_house_load_w: float | None
+    solax_measured_power_w: float | None
+    solax_measured_power_l1_w: float | None
+    solax_measured_power_l2_w: float | None
+    solax_measured_power_l3_w: float | None
     solax_grid_import_w: float | None
     solax_grid_export_w: float | None
 
     deye_soc_pct: float | None
     deye_battery_power_w: float | None
+    deye_battery_power_raw_w: float | None
     deye_battery_state: str | None
     deye_grid_power_w: float | None
     deye_external_power_w: float | None

@@ -16,6 +16,18 @@ energy_v2:
   export_average_warning_w: 9800
   export_average_window_s: 900
   export_sample_max_age_s: 120
+  flow_tick_interval_s: 5
+  flow_thresholds:
+    grid_import_warning_w: 200
+    grid_import_violation_w: 500
+    battery_flow_warning_w: 300
+    battery_flow_violation_w: 500
+    minimum_deye_charge_w: 300
+    minimum_export_w: 300
+    pv_surplus_reserve_w: 500
+    warning_persistence_s: 5
+    violation_persistence_s: 10
+    telemetry_stale_timeout_s: 30
   deye_max_soc_pct: 90
   solax_pv_charge_start_soc_pct: 95
   pv_reserve_w: 1000
