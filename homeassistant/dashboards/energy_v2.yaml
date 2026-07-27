@@ -84,6 +84,10 @@ views:
 
           **Pokrytí okna:** `{{ states('input_number.energy_v2_export_window_covered_s') }} / 900 s`
 
+          **Stáří posledního exportního vzorku:** `{{ states('input_number.energy_v2_export_sample_age_s') }} s`
+
+          **Poslední validní exportní vzorek:** `{{ states('input_datetime.energy_v2_last_valid_export_sample') }}`
+
           **Provozní cíl ENERGY V2:** `9 800 W`
 
           **Povolený 15min průměr:** `10 000 W`
@@ -105,10 +109,8 @@ views:
             name: FV výkon
           - entity: sensor.solax_house_load
             name: Spotřeba domu
-          - entity: sensor.solax_grid_import
-            name: Grid import
-          - entity: sensor.solax_grid_export
-            name: Grid export
+          - entity: sensor.solax_measured_power
+            name: Hlavní měření přípojky (+ export / − import)
 
       - type: markdown
         title: Směr toku SolaX baterie
@@ -126,8 +128,8 @@ views:
         entities:
           - entity: sensor.deye_battery
             name: SOC baterie
-          - entity: sensor.deye_battery_power
-            name: Výkon baterie
+          - entity: sensor.battery_power_otoceny
+            name: Výkon baterie normalizovaný
           - entity: sensor.deye_battery_state
             name: Stav baterie
           - entity: sensor.deye_grid_power
@@ -157,13 +159,13 @@ views:
 
           **SolaX baterie:** `{{ states('sensor.solax_battery_power_charge') }} W`
 
-          **DEYE baterie:** `{{ states('sensor.deye_battery_power') }} W`
+          **DEYE baterie:** `{{ states('sensor.battery_power_otoceny') }} W`
 
-          **Import ze sítě:** `{{ states('sensor.solax_grid_import') }} W`
+          **Hlavní měření přípojky:** `{{ states('sensor.solax_measured_power') }} W`
 
           **Export do sítě:** `{{ states('input_number.energy_v2_instant_grid_export_w') }} W`
 
-          Znaménkové konvence jsou uvedené v pohledu Diagnostika.
+          Hlavní měření přípojky: `+` = export, `−` = import. Baterie: `+` = nabíjení, `−` = vybíjení.
 
       - type: markdown
         title: Phase 2 flow monitoring
@@ -236,6 +238,7 @@ views:
           - sensor.solax_battery_power_charge
           - sensor.solax_pv_power_total
           - sensor.solax_house_load
+          - sensor.solax_measured_power
           - sensor.solax_grid_import
           - sensor.solax_grid_export
 
@@ -244,6 +247,7 @@ views:
         show_header_toggle: false
         entities:
           - sensor.deye_battery
+          - sensor.battery_power_otoceny
           - sensor.deye_battery_power
           - sensor.deye_battery_state
           - sensor.deye_grid_power
@@ -275,24 +279,52 @@ views:
 
           `−` = vybíjení
 
-          **DEYE battery power**
+          **DEYE battery power normalizovaný**
+
+          `sensor.battery_power_otoceny`
+
+          `+` = nabíjení
+
+          `−` = vybíjení
+
+          **DEYE raw battery power**
+
+          `sensor.deye_battery_power`
 
           `+` = vybíjení
 
           `−` = nabíjení
 
-          **DEYE grid power**
+          **Hlavní měření přípojky**
+
+          `sensor.solax_measured_power`
+
+          `+` = export
+
+          `−` = import
+
+          **Kontrolní DEYE grid power**
 
           `+` = import
 
           `−` = export
 
-          Tyto konvence se ve Phase 2 ověřují proti reálné telemetrii.
+          Hlavní referencí celé přípojky je uživatelsky potvrzený `sensor.solax_measured_power`.
+
+      - type: history-graph
+        title: Hlavní měření přípojky a fáze - poslední hodina
+        hours_to_show: 1
+        entities:
+          - sensor.solax_measured_power
+          - sensor.solax_measured_power_l1
+          - sensor.solax_measured_power_l2
+          - sensor.solax_measured_power_l3
 
       - type: history-graph
         title: Porovnání síťových měření - poslední hodina
         hours_to_show: 1
         entities:
+          - sensor.solax_measured_power
           - sensor.deye_grid_power
           - sensor.deye_external_power
           - sensor.solax_grid_import
@@ -303,6 +335,7 @@ views:
         title: Porovnání síťových měření - posledních 6 hodin
         hours_to_show: 6
         entities:
+          - sensor.solax_measured_power
           - sensor.deye_grid_power
           - sensor.deye_external_power
           - sensor.solax_grid_import
@@ -330,6 +363,10 @@ views:
           **Rolling average:** `{{ states('input_number.energy_v2_rolling_15min_export_w') }} W`
 
           **Covered duration:** `{{ states('input_number.energy_v2_export_window_covered_s') }} s`
+
+          **Sample age:** `{{ states('input_number.energy_v2_export_sample_age_s') }} s`
+
+          **Last valid sample:** `{{ states('input_datetime.energy_v2_last_valid_export_sample') }}`
 
           **Window complete/incomplete:** `{{ states('input_number.energy_v2_export_window_covered_s') | float(0) >= 900 }}`
 
@@ -413,7 +450,8 @@ views:
           * minimum export: `300 W`
           * warning persistence: `5 s`
           * violation persistence: `10 s`
-          * export telemetry stale timeout: `120 s`
+          * flow tick interval: `5 s`
+          * export telemetry stale timeout: `30 s`
 
       - type: markdown
         title: Strategie

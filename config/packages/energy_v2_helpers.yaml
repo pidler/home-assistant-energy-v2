@@ -132,6 +132,15 @@ input_number:
     mode: box
     initial: 0
 
+  energy_v2_export_sample_age_s:
+    name: ENERGY V2 stari exportniho vzorku
+    min: 0
+    max: 3600
+    step: 1
+    unit_of_measurement: s
+    mode: box
+    initial: 0
+
 input_text:
   energy_v2_last_fault:
     name: ENERGY V2 posledni chyba
@@ -183,5 +192,10 @@ input_datetime:
 
   energy_v2_last_export_average_violation:
     name: ENERGY V2 posledni prekroceni 15min exportu
+    has_date: true
+    has_time: true
+
+  energy_v2_last_valid_export_sample:
+    name: ENERGY V2 posledni validni exportni vzorek
     has_date: true
     has_time: true

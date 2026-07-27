@@ -38,6 +38,7 @@ REQUIRED_HELPERS: dict[str, set[str]] = {
         "energy_v2_last_successful_evaluation",
         "energy_v2_last_flow_violation",
         "energy_v2_last_export_average_violation",
+        "energy_v2_last_valid_export_sample",
     },
     "input_number": {
         "energy_v2_deye_fv_ledger",
@@ -45,6 +46,7 @@ REQUIRED_HELPERS: dict[str, set[str]] = {
         "energy_v2_instant_grid_export_w",
         "energy_v2_rolling_15min_export_w",
         "energy_v2_export_window_covered_s",
+        "energy_v2_export_sample_age_s",
     },
 }
 
@@ -65,6 +67,7 @@ EXPECTED_INITIALS: dict[tuple[str, str], str] = {
     ("input_number", "energy_v2_instant_grid_export_w"): "0",
     ("input_number", "energy_v2_rolling_15min_export_w"): "0",
     ("input_number", "energy_v2_export_window_covered_s"): "0",
+    ("input_number", "energy_v2_export_sample_age_s"): "0",
 }
 
 KEY_RE = re.compile(r"^(?P<indent> *)(?P<key>[A-Za-z0-9_]+):(?: +(?P<value>.*))?$")
