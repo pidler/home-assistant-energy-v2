@@ -13,6 +13,10 @@ Current development:
   power flows.
 - aggregate export-limit diagnostics using a time-weighted rolling 15-minute average.
 - read-only Lovelace dashboard YAML for phase 2 review.
+- grid authority is `sensor.solax_measured_power`, where positive means export and negative means
+  import for the whole connection.
+- battery power is normalized internally as positive charging and negative discharging for both
+  SolaX and DEYE; DEYE uses existing `sensor.battery_power_otoceny`.
 
 Safety boundary:
 
@@ -21,7 +25,7 @@ Safety boundary:
 - Grid Charge is not implemented,
 - ledger helpers are not written,
 - legacy `energy_trading_*` entities and automations are not changed by this project phase.
-- the dashboard is not deployed by this repository change.
+- the repository change does not update the already deployed production dashboard.
 
 Confirmed phase 2 export parameters:
 

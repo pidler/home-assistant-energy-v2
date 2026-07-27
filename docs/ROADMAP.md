@@ -14,6 +14,9 @@ Status: in review in PR #2.
 
 - Monitor current SolaX, DEYE, PV, house, and grid flows.
 - Monitor aggregate grid export against one shared export budget.
+- Use `sensor.solax_measured_power` as the confirmed whole-connection grid authority.
+- Use `sensor.battery_power_otoceny` as the normalized DEYE battery-power input.
+- Run passive flow monitoring every 5 s while keeping the economic planner on 15 min cadence.
 - Calculate time-weighted 15-minute export average.
 - Provide a read-only dashboard for status, telemetry, flow diagnostics and export-limit review.
 - Keep all outputs diagnostic only.
@@ -24,7 +27,8 @@ After code review:
 
 - review the dashboard together with the phase 2 AppDaemon changes,
 - deploy phase 2 AppDaemon code passively,
-- add the dashboard only through a separately approved Home Assistant Lovelace change,
+- do not update the already deployed read-only production dashboard without a separately approved
+  Home Assistant Lovelace change,
 - verify helper creation,
 - observe flow states and export average for several days,
 - compare diagnostics with real inverter behavior.
@@ -36,6 +40,7 @@ Not started.
 Prerequisites:
 
 - confirmed sign conventions in production,
+- several days of passive observation with the `sensor.solax_measured_power` authority,
 - reliable export-average diagnostics,
 - legacy conflict strategy,
 - reviewed actuator writes,

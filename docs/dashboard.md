@@ -8,8 +8,8 @@ Dashboard YAML is versioned at:
 homeassistant/dashboards/energy_v2.yaml
 ```
 
-It is designed for a future standalone YAML Lovelace dashboard in Home Assistant. It is not
-deployed to production by this pull request.
+It is designed for a standalone YAML Lovelace dashboard in Home Assistant. A production dashboard
+was deployed separately for review from an earlier PR #2 revision; this branch does not update it.
 
 ## Purpose
 
@@ -75,9 +75,14 @@ Telemetry:
 - `sensor.solax_battery_power_charge`
 - `sensor.solax_pv_power_total`
 - `sensor.solax_house_load`
+- `sensor.solax_measured_power`
+- `sensor.solax_measured_power_l1`
+- `sensor.solax_measured_power_l2`
+- `sensor.solax_measured_power_l3`
 - `sensor.solax_grid_import`
 - `sensor.solax_grid_export`
 - `sensor.deye_battery`
+- `sensor.battery_power_otoceny`
 - `sensor.deye_battery_power`
 - `sensor.deye_battery_state`
 - `sensor.deye_grid_power`
@@ -118,9 +123,11 @@ ENERGY V2 helpers:
 - `input_datetime.energy_v2_last_successful_evaluation`
 - `input_datetime.energy_v2_last_flow_violation`
 - `input_datetime.energy_v2_last_export_average_violation`
+- `input_datetime.energy_v2_last_valid_export_sample`
 - `input_number.energy_v2_instant_grid_export_w`
 - `input_number.energy_v2_rolling_15min_export_w`
 - `input_number.energy_v2_export_window_covered_s`
+- `input_number.energy_v2_export_sample_age_s`
 
 Legacy master state only:
 
@@ -176,7 +183,7 @@ It does not contact Home Assistant.
 
 ## Future deployment procedure
 
-Do not deploy the dashboard until PR #2 has completed code review.
+Do not update the production dashboard from this branch until PR #2 has completed code review.
 
 For future deployment, use a separate approved change:
 
@@ -187,6 +194,16 @@ For future deployment, use a separate approved change:
 5. Verify that dashboard cards render and no control surfaces are present.
 
 This repository change does not edit production `configuration.yaml`.
+
+## Confirmed measurement authority
+
+- Main whole-connection grid telemetry: `sensor.solax_measured_power`.
+- Sign convention: positive means export, negative means import.
+- Phase sensors `sensor.solax_measured_power_l1`, `sensor.solax_measured_power_l2`, and
+  `sensor.solax_measured_power_l3` are diagnostic only.
+- SolaX battery power uses `sensor.solax_battery_power_charge`.
+- DEYE normalized battery power uses `sensor.battery_power_otoceny`.
+- Raw DEYE battery power `sensor.deye_battery_power` is diagnostic only and has the opposite sign.
 
 ## Rollback / removal
 

@@ -23,6 +23,13 @@ ENERGY V2 uses 9.8 kW as its operational aggregate export target.
 
 ENERGY V2 monitors a time-weighted rolling 15-minute average export.
 
+The rolling export average uses `sensor.solax_measured_power` as the confirmed whole-connection
+grid authority:
+
+- positive value = export,
+- negative value = import,
+- import is clamped to zero for export averaging.
+
 Instantaneous export above 9.8 kW or 10 kW is a diagnostic warning, not an automatic fault.
 
 All export sources share one aggregate export budget:

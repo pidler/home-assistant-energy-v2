@@ -3,6 +3,12 @@
 This directory is a copy-ready package for the passive ENERGY V2 AppDaemon app.
 Phase 2 adds summer flow monitoring diagnostics only.
 
+Phase 2 hardening uses:
+
+- `sensor.solax_measured_power` as primary whole-connection grid telemetry,
+- `sensor.battery_power_otoceny` as normalized DEYE battery power,
+- a passive 5 s flow tick separate from the 15 min shadow planner.
+
 Do not restart Home Assistant Core for this step. Reload or restart only the AppDaemon add-on
 after Home Assistant helpers already exist and have been verified.
 

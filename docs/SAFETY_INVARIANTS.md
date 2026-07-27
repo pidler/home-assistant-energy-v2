@@ -38,7 +38,26 @@ SolaX, DEYE and uncontrolled PV surplus must share one aggregate grid-export bud
 
 There must not be two independent export budgets of 9,800 W.
 
+The confirmed aggregate grid telemetry authority is `sensor.solax_measured_power`.
+
+- positive value = export to the distribution grid,
+- negative value = import from the distribution grid.
+
+Phase sensors `sensor.solax_measured_power_l1`, `sensor.solax_measured_power_l2`, and
+`sensor.solax_measured_power_l3` are diagnostics only and must not create physical reactions in
+phase 2.
+
+SolaX and normalized DEYE battery power use one internal convention:
+
+- positive value = battery charging,
+- negative value = battery discharging.
+
+DEYE raw `sensor.deye_battery_power` has the opposite convention and is diagnostic only.
+
 ## Missing or stale telemetry
 
 If aggregate export telemetry is unavailable, stale, or ambiguous, ENERGY V2 must not treat the
 export state as safe for starting a new active export.
+
+Stale export diagnostics must not overwrite last known numeric export helpers with zero unless
+zero is a real measured value.

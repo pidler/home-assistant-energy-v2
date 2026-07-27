@@ -55,8 +55,11 @@ Actual production loading by a running AppDaemon instance is still not verified.
 
 Required telemetry:
 
-- SolaX SOC, battery power, PV power, house load, grid import, grid export
-- DEYE SOC, battery power, battery state, grid power, external power, device state, connection
+- SolaX SOC, battery power, PV power, house load, measured whole-connection grid power, grid
+  import, grid export
+- optional SolaX measured L1/L2/L3 phase power for diagnostics
+- DEYE SOC, normalized battery power, raw battery power for diagnostics, battery state, grid power,
+  external power, device state, connection
 - buy price, sell price
 - DEYE grid charging switch state
 - DEYE export switch state
@@ -64,6 +67,10 @@ Required telemetry:
 Optional telemetry:
 
 - `future_sell_rank`
+- `sensor.solax_measured_power_l1`
+- `sensor.solax_measured_power_l2`
+- `sensor.solax_measured_power_l3`
+- raw `sensor.deye_battery_power`
 
 Required helpers:
 
@@ -134,10 +141,12 @@ Diagnostics written by the app:
 - `input_number.energy_v2_instant_grid_export_w`: current aggregate grid export sample
 - `input_number.energy_v2_rolling_15min_export_w`: time-weighted rolling export average
 - `input_number.energy_v2_export_window_covered_s`: available rolling-window history
+- `input_number.energy_v2_export_sample_age_s`: age of the last valid export sample
 - `input_select.energy_v2_export_limit_state`: export-limit classification
 - `input_text.energy_v2_export_limit_summary`: compact export-limit diagnostics
 - `input_datetime.energy_v2_last_export_average_violation`: last time the 15-minute average exceeded
   the permitted average
+- `input_datetime.energy_v2_last_valid_export_sample`: last successful export sample timestamp
 
 If `input_boolean.energy_v2_shadow_mode` is `off`:
 
@@ -157,7 +166,8 @@ Telemetry validation rejects:
 - `future_sell_rank < 1` when that optional entity is available,
 - DEYE disconnected or device state other than `Normal`.
 
-Negative power values remain valid because SolaX and DEYE use different sign conventions.
+Negative power values remain valid. Internal battery convention is unified as positive charging
+and negative discharging for SolaX and normalized DEYE power.
 
 Safe enable additionally blocks:
 
@@ -212,9 +222,23 @@ It also monitors aggregate export against the confirmed system parameters:
 - permitted export is 10,000 W as a 15-minute average,
 - ENERGY V2 operational export target is 9,800 W.
 
-The rolling export average is time-weighted over the last 900 seconds. Instantaneous excursions
-above 9,800 W or 10,000 W are warnings only; only a time-weighted 15-minute average above 10,000 W
-is a flow violation.
+The primary grid authority is `sensor.solax_measured_power`, a whole-connection three-phase
+measurement where positive means export and negative means import. `sensor.deye_grid_power`,
+`sensor.deye_external_power`, `sensor.solax_grid_import`, and `sensor.solax_grid_export` remain
+comparison diagnostics only.
+
+The rolling export average is derived from `max(sensor.solax_measured_power, 0)` and is
+time-weighted over the last 900 seconds. Instantaneous excursions above 9,800 W or 10,000 W are
+warnings only; only a time-weighted 15-minute average above 10,000 W is a flow violation.
+
+Timing:
+
+- heartbeat: 10 s,
+- passive flow monitoring: configurable, default 5 s,
+- shadow economic planner: 15 min.
+
+The flow tick does not call `execute_mode()` or any physical service. It only reads telemetry and
+publishes Energy V2 diagnostics. It skips overlapping flow evaluations.
 
 `WINTER_GRID_OPTIMIZATION` and `SERVICE` are accepted strategy helper values but are not
 implemented in phase 2; they return a passive `DISABLED` recommendation.
