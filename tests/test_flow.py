@@ -20,6 +20,8 @@ from apps.energy_v2.flow import (
     solax_battery_charging_power_w,
     solax_battery_discharging_power_w,
     summarize_flow,
+    validate_flow_thresholds,
+    validate_system_parameters,
 )
 from apps.energy_v2.models import ExportLimitState, FlowState
 from tests.test_planner import snapshot
@@ -48,20 +50,20 @@ def test_solax_sign_convention_charging_positive() -> None:
     assert solax_battery_discharging_power_w(-500.0, signs) == 500.0
 
 
-def test_deye_sign_convention_discharging_positive() -> None:
-    signs = SignConventions(deye_battery_discharging_positive=True)
-    assert deye_battery_discharging_power_w(900.0, signs) == 900.0
-    assert deye_battery_charging_power_w(900.0, signs) == 0.0
-    assert deye_battery_discharging_power_w(-400.0, signs) == 0.0
-    assert deye_battery_charging_power_w(-400.0, signs) == 400.0
+def test_deye_sign_convention_charging_positive() -> None:
+    signs = SignConventions(deye_battery_charging_positive=True)
+    assert deye_battery_charging_power_w(900.0, signs) == 900.0
+    assert deye_battery_discharging_power_w(900.0, signs) == 0.0
+    assert deye_battery_charging_power_w(-400.0, signs) == 0.0
+    assert deye_battery_discharging_power_w(-400.0, signs) == 400.0
 
 
 def test_grid_import_export_transform() -> None:
-    signs = SignConventions(deye_grid_import_positive=True)
-    assert grid_import_power_w(600.0, signs) == 600.0
-    assert grid_export_power_w(600.0, signs) == 0.0
-    assert grid_import_power_w(-300.0, signs) == 0.0
-    assert grid_export_power_w(-300.0, signs) == 300.0
+    signs = SignConventions(grid_export_positive=True)
+    assert grid_export_power_w(600.0, signs) == 600.0
+    assert grid_import_power_w(600.0, signs) == 0.0
+    assert grid_export_power_w(-300.0, signs) == 0.0
+    assert grid_import_power_w(-300.0, signs) == 300.0
 
 
 def test_zero_power_is_normal() -> None:
@@ -74,8 +76,9 @@ def test_zero_power_is_normal() -> None:
 def test_derive_flow_snapshot_uses_explicit_signs() -> None:
     telemetry = snapshot(
         solax_battery_power_w=-500.0,
-        deye_battery_power_w=-700.0,
-        deye_grid_power_w=-1000.0,
+        deye_battery_power_w=700.0,
+        solax_measured_power_w=1000.0,
+        deye_grid_power_w=-9999.0,
         solax_pv_power_w=3000.0,
         solax_house_load_w=1200.0,
     )
@@ -112,6 +115,40 @@ def test_long_import_has_violation() -> None:
     assert "Grid import violation" in "; ".join(assessment.violations)
 
 
+def test_long_import_event_counts_once_with_repeated_5s_ticks() -> None:
+    monitor = FlowDebouncer(FlowThresholds(warning_persistence_s=5.0, violation_persistence_s=10.0))
+    start = datetime(2026, 7, 26, 12, 0, 0)
+
+    for seconds in range(0, 600, 5):
+        monitor.assess(flow(grid_import_w=700.0), start + timedelta(seconds=seconds))
+
+    assert monitor.persistent_import_count == 1
+
+
+def test_separate_import_events_count_twice() -> None:
+    monitor = FlowDebouncer(FlowThresholds(warning_persistence_s=5.0, violation_persistence_s=10.0))
+    start = datetime(2026, 7, 26, 12, 0, 0)
+
+    monitor.assess(flow(grid_import_w=700.0), start)
+    monitor.assess(flow(grid_import_w=700.0), start + timedelta(seconds=10))
+    monitor.assess(flow(), start + timedelta(seconds=15))
+    monitor.assess(flow(grid_import_w=700.0), start + timedelta(seconds=20))
+    monitor.assess(flow(grid_import_w=700.0), start + timedelta(seconds=30))
+
+    assert monitor.persistent_import_count == 2
+
+
+def test_long_cross_charge_event_counts_once() -> None:
+    monitor = FlowDebouncer(FlowThresholds(warning_persistence_s=5.0, violation_persistence_s=10.0))
+    start = datetime(2026, 7, 26, 12, 0, 0)
+    cross = flow(deye_battery_discharging_w=800.0, grid_export_w=900.0, solax_battery_charging_w=700.0)
+
+    for seconds in range(0, 600, 5):
+        monitor.assess(cross, start + timedelta(seconds=seconds))
+
+    assert monitor.cross_charging_count == 1
+
+
 def test_solax_discharge_and_deye_charge_detected() -> None:
     assessment = assess_flow_snapshot(flow(solax_battery_discharging_w=600.0, deye_battery_charging_w=700.0))
     assert assessment.state is FlowState.SOLAX_TO_DEYE
@@ -136,11 +173,43 @@ def test_likely_deye_charging_from_pv_surplus() -> None:
 
 
 def test_negative_house_load_does_not_increase_surplus() -> None:
-    telemetry = snapshot(solax_pv_power_w=1000.0, solax_house_load_w=-5000.0, deye_battery_power_w=-800.0)
+    telemetry = snapshot(solax_pv_power_w=1000.0, solax_house_load_w=-5000.0, deye_battery_power_w=800.0)
     result = derive_flow_snapshot(telemetry, SignConventions())
 
     assert result.house_load_w == 0.0
     assert assess_flow_snapshot(result).state is not FlowState.LIKELY_PV_SURPLUS_CHARGE
+
+
+def test_grid_flow_uses_solax_measured_power_not_control_sensors() -> None:
+    export = derive_flow_snapshot(snapshot(solax_measured_power_w=5000.0, deye_grid_power_w=-1000.0), SignConventions())
+    import_ = derive_flow_snapshot(
+        snapshot(solax_measured_power_w=-5000.0, deye_grid_power_w=1000.0),
+        SignConventions(),
+    )
+    zero = derive_flow_snapshot(snapshot(solax_measured_power_w=0.0), SignConventions())
+
+    assert export.grid_export_w == 5000.0
+    assert export.grid_import_w == 0.0
+    assert import_.grid_import_w == 5000.0
+    assert import_.grid_export_w == 0.0
+    assert zero.grid_import_w == 0.0
+    assert zero.grid_export_w == 0.0
+
+
+def test_deye_normalized_battery_power_is_not_flipped_twice() -> None:
+    discharge = derive_flow_snapshot(
+        snapshot(deye_battery_power_raw_w=1000.0, deye_battery_power_w=-1000.0),
+        SignConventions(),
+    )
+    charge = derive_flow_snapshot(
+        snapshot(deye_battery_power_raw_w=-1000.0, deye_battery_power_w=1000.0),
+        SignConventions(),
+    )
+
+    assert discharge.deye_battery_discharging_w == 1000.0
+    assert discharge.deye_battery_charging_w == 0.0
+    assert charge.deye_battery_charging_w == 1000.0
+    assert charge.deye_battery_discharging_w == 0.0
 
 
 def test_diagnostic_summary_is_limited() -> None:
@@ -275,6 +344,7 @@ def test_stale_telemetry_is_unknown_not_safe() -> None:
 
     assert average.stale
     assert assessment.state is ExportLimitState.UNKNOWN
+    assert average.last_sample_age_s == 11.0
 
 
 def test_exact_average_limit_crossing_uses_greater_than_10000() -> None:
@@ -303,3 +373,58 @@ def test_system_parameter_defaults_are_confirmed_values() -> None:
     assert params.target_export_limit_w == 9_800.0
     assert params.legal_export_average_limit_w == 10_000.0
     assert params.export_average_window_s == 900.0
+
+
+def test_rolling_tracker_ignores_nan_and_inf_samples() -> None:
+    tracker = RollingExportAverageTracker()
+    start = datetime(2026, 7, 27, 12, 0, 0)
+
+    tracker.add_sample(start, float("nan"))
+    tracker.add_sample(start, float("inf"))
+
+    assert tracker.average(start).stale
+
+
+def test_rolling_tracker_handles_duplicate_timestamp() -> None:
+    tracker = RollingExportAverageTracker(window_s=300.0)
+    start = datetime(2026, 7, 27, 12, 0, 0)
+
+    tracker.add_sample(start, 1000.0)
+    tracker.add_sample(start, 5000.0)
+    average = tracker.add_sample(start + timedelta(seconds=300), 5000.0)
+
+    assert average.average_w == 5000.0
+
+
+def test_rolling_tracker_sorts_timestamp_going_backwards() -> None:
+    tracker = RollingExportAverageTracker(window_s=300.0)
+    start = datetime(2026, 7, 27, 12, 0, 0)
+
+    tracker.add_sample(start + timedelta(seconds=60), 7000.0)
+    tracker.add_sample(start, 1000.0)
+    average = tracker.add_sample(start + timedelta(seconds=300), 7000.0)
+
+    assert average.average_w == ((1000.0 * 60.0) + (7000.0 * 240.0)) / 300.0
+
+
+def test_rolling_tracker_clamps_negative_export_to_zero() -> None:
+    tracker = RollingExportAverageTracker(window_s=300.0)
+    start = datetime(2026, 7, 27, 12, 0, 0)
+
+    tracker.add_sample(start, -5000.0)
+    average = tracker.add_sample(start + timedelta(seconds=300), -5000.0)
+
+    assert average.average_w == 0.0
+
+
+def test_invalid_system_parameters_are_reported() -> None:
+    assert validate_system_parameters(SystemParameters(target_export_limit_w=11_000.0))
+    assert validate_system_parameters(SystemParameters(export_average_window_s=0.0))
+    assert validate_system_parameters(SystemParameters(legal_export_average_limit_w=float("inf")))
+
+
+def test_invalid_flow_thresholds_are_reported() -> None:
+    assert validate_flow_thresholds(FlowThresholds(grid_import_warning_w=600.0, grid_import_violation_w=500.0))
+    assert validate_flow_thresholds(FlowThresholds(warning_persistence_s=10.0, violation_persistence_s=5.0))
+    assert validate_flow_thresholds(FlowThresholds(telemetry_stale_timeout_s=0.0))
+    assert validate_flow_thresholds(FlowThresholds(minimum_export_w=float("nan")))

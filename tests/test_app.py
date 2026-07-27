@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 import types
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ class StubHass:
         self.logs: list[tuple[str, str]] = []
         self.listeners: list[str] = []
         self.timers: list[tuple[str, int | str]] = []
+        self.run_every_callbacks: list[tuple[object, int]] = []
         self.turned_off: list[str] = []
 
     def get_state(self, entity_id: str, **kwargs: Any) -> Any:
@@ -51,6 +53,7 @@ class StubHass:
 
     def run_every(self, callback: object, start: str, interval: int) -> tuple[str, int]:
         self.timers.append(("every", interval))
+        self.run_every_callbacks.append((callback, interval))
         return ("every", interval)
 
     def run_in(self, callback: object, delay: int) -> tuple[str, int]:
@@ -98,10 +101,15 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["solax_battery_power"]: "0",
             ENTITY_IDS["solax_pv_power"]: "5000",
             ENTITY_IDS["solax_house_load"]: "1000",
+            ENTITY_IDS["solax_measured_power"]: "0",
+            ENTITY_IDS["solax_measured_power_l1"]: "0",
+            ENTITY_IDS["solax_measured_power_l2"]: "0",
+            ENTITY_IDS["solax_measured_power_l3"]: "0",
             ENTITY_IDS["solax_grid_import"]: "0",
             ENTITY_IDS["solax_grid_export"]: "0",
             ENTITY_IDS["deye_soc"]: "50",
             ENTITY_IDS["deye_battery_power"]: "0",
+            ENTITY_IDS["deye_battery_power_raw"]: "0",
             ENTITY_IDS["deye_battery_state"]: "idle",
             ENTITY_IDS["deye_grid_power"]: "0",
             ENTITY_IDS["deye_external_power"]: "0",
@@ -126,6 +134,7 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["energy_v2_instant_grid_export_w"]: "0",
             ENTITY_IDS["energy_v2_rolling_15min_export_w"]: "0",
             ENTITY_IDS["energy_v2_export_window_covered_s"]: "0",
+            ENTITY_IDS["energy_v2_export_sample_age_s"]: "0",
             ENTITY_IDS["energy_v2_export_limit_state"]: "UNKNOWN",
             ENTITY_IDS["energy_v2_export_limit_summary"]: "",
             ENTITY_IDS["energy_v2_deye_fv_ledger"]: "1",
@@ -321,8 +330,8 @@ def test_flow_helpers_are_written_on_successful_shadow_tick() -> None:
     module = import_app_module()
     app = module.EnergyV2App()
     app.states = valid_states()
-    app.states[ENTITY_IDS["deye_battery_power"]] = "-800"
-    app.states[ENTITY_IDS["deye_grid_power"]] = "0"
+    app.states[ENTITY_IDS["deye_battery_power"]] = "800"
+    app.states[ENTITY_IDS["solax_measured_power"]] = "0"
     app.initialize()
 
     app._shadow_tick()
@@ -351,7 +360,7 @@ def test_instant_export_above_legal_limit_does_not_fault_when_average_is_safe() 
     app = module.EnergyV2App()
     app.states = valid_states()
     app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
-    app.states[ENTITY_IDS["deye_grid_power"]] = "-11000"
+    app.states[ENTITY_IDS["solax_measured_power"]] = "11000"
     app.initialize()
 
     app._shadow_tick()
@@ -382,11 +391,34 @@ def test_system_parameters_load_from_appdaemon_args() -> None:
     assert app.export_average_tracker.window_s == 600.0
 
 
+def test_flow_thresholds_and_tick_interval_load_from_appdaemon_args() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.args = {
+        "flow_tick_interval_s": 7,
+        "flow_thresholds": {
+            "grid_import_warning_w": 250,
+            "grid_import_violation_w": 600,
+            "warning_persistence_s": 6,
+            "violation_persistence_s": 12,
+        },
+    }
+    app.states = valid_states()
+    app.initialize()
+
+    assert app.flow_tick_interval_s == 7
+    assert app.flow_thresholds.grid_import_warning_w == 250
+    assert app.flow_thresholds.grid_import_violation_w == 600
+    assert app.flow_thresholds.warning_persistence_s == 6
+    assert app.flow_thresholds.violation_persistence_s == 12
+    assert ("every", 7) in app.timers
+
+
 def test_no_physical_service_paths_are_added_by_phase_2() -> None:
     module = import_app_module()
     app = module.EnergyV2App()
     app.states = valid_states()
-    app.states[ENTITY_IDS["deye_grid_power"]] = "-11000"
+    app.states[ENTITY_IDS["solax_measured_power"]] = "11000"
     app.initialize()
 
     app._shadow_tick()
@@ -404,6 +436,95 @@ def test_no_physical_service_paths_are_added_by_phase_2() -> None:
     assert all("deye_" not in kwargs["entity_id"] for _service, kwargs in app.services)
 
 
+def test_flow_tick_runs_without_planner_or_physical_service_calls() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["solax_measured_power"]] = "-700"
+    app.initialize()
+
+    app._flow_tick()
+
+    assert helper_value(app, "energy_v2_flow_state") == "GRID_IMPORT"
+    assert helper_value(app, "energy_v2_requested_mode") == "DISABLED"
+    service_names = {service for service, _kwargs in app.services}
+    assert service_names <= {
+        "input_select/select_option",
+        "input_text/set_value",
+        "input_datetime/set_datetime",
+        "input_boolean/turn_on",
+        "input_boolean/turn_off",
+        "input_number/set_value",
+    }
+    assert all("solax" not in kwargs["entity_id"] for _service, kwargs in app.services)
+    assert all("deye_" not in kwargs["entity_id"] for _service, kwargs in app.services)
+
+
+def test_flow_tick_persists_warning_and_violation_without_entity_change() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
+    app.states[ENTITY_IDS["solax_measured_power"]] = "-700"
+    app.initialize()
+
+    app._flow_tick()
+    app.flow_debouncer.grid_import_warning_since -= timedelta(seconds=6)
+    app.flow_debouncer.grid_import_violation_since -= timedelta(seconds=11)
+    app._flow_tick()
+
+    assert "Grid import is persistent" in helper_value(app, "energy_v2_flow_warning")
+    assert "Grid import violation" in helper_value(app, "energy_v2_flow_violation")
+    assert app.flow_debouncer.persistent_import_count == 1
+
+
+def test_rolling_average_uses_solax_measured_power_source() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
+    app.states[ENTITY_IDS["solax_measured_power"]] = "5000"
+    app.states[ENTITY_IDS["deye_grid_power"]] = "-11000"
+    app.initialize()
+
+    app._flow_tick()
+
+    assert helper_value(app, "energy_v2_instant_grid_export_w") == 5000.0
+
+
+def test_import_on_solax_measured_power_does_not_reduce_export_below_zero() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
+    app.states[ENTITY_IDS["solax_measured_power"]] = "-5000"
+    app.initialize()
+
+    app._flow_tick()
+
+    assert helper_value(app, "energy_v2_instant_grid_export_w") == 0.0
+
+
+def test_invalid_config_uses_safe_defaults_and_blocks_enable() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.args = {
+        "flow_tick_interval_s": 0,
+        "flow_thresholds": {"grid_import_warning_w": 700, "grid_import_violation_w": 500},
+    }
+    app.states = valid_states()
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert app.flow_tick_interval_s == 5
+    assert helper_value(app, "energy_v2_safe_to_enable") == "off"
+    assert helper_value(app, "energy_v2_actual_mode") == "DISABLED"
+    assert "grid_import_violation_w must be >= grid_import_warning_w" in helper_value(
+        app, "energy_v2_last_evaluation_error"
+    )
+
+
 def test_invalid_required_safety_telemetry_reports_specific_error() -> None:
     module = import_app_module()
     app = module.EnergyV2App()
@@ -417,6 +538,50 @@ def test_invalid_required_safety_telemetry_reports_specific_error() -> None:
     assert helper_value(app, "energy_v2_requested_mode") == "DISABLED"
     assert "Invalid telemetry:" in helper_value(app, "energy_v2_last_evaluation_error")
     assert "SolaX SOC is missing" in helper_value(app, "energy_v2_last_evaluation_error")
+
+
+def test_invalid_main_grid_sensor_states_are_invalid_telemetry() -> None:
+    module = import_app_module()
+    invalid_values = ("unknown", "unavailable", "NaN", "inf", "-inf")
+
+    for invalid_value in invalid_values:
+        app = module.EnergyV2App()
+        app.states = valid_states()
+        app.states[ENTITY_IDS["energy_v2_enabled"]] = "off"
+        app.states[ENTITY_IDS["solax_measured_power"]] = invalid_value
+        app.initialize()
+
+        app._shadow_tick()
+
+        assert "SolaX measured grid power is missing" in helper_value(app, "energy_v2_last_evaluation_error")
+
+
+def test_phase_measurements_are_loaded_without_sign_change() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["solax_measured_power_l1"]] = "-100"
+    app.states[ENTITY_IDS["solax_measured_power_l2"]] = "0"
+    app.states[ENTITY_IDS["solax_measured_power_l3"]] = "100"
+    app.initialize()
+
+    snapshot = app.telemetry.snapshot()
+
+    assert snapshot.solax_measured_power_l1_w == -100.0
+    assert snapshot.solax_measured_power_l2_w == 0.0
+    assert snapshot.solax_measured_power_l3_w == 100.0
+
+
+def test_missing_phase_measurement_does_not_crash_or_block_telemetry() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    del app.states[ENTITY_IDS["solax_measured_power_l2"]]
+    app.initialize()
+
+    app._shadow_tick()
+
+    assert helper_value(app, "energy_v2_app_status") == "HEALTHY"
 
 
 def test_unavailable_optional_future_rank_with_export_disabled_is_not_invalid_telemetry() -> None:
