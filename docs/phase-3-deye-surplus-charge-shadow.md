@@ -21,3 +21,19 @@ All mismatches are diagnostic. The shadow controller cannot invoke physical serv
 
 Confirmation helpers use the **elapsed seconds** convention. FAULT requires 60 seconds of stable,
 valid telemetry before the state machine may return to its current-condition state.
+
+## Rollback follow-up  2026-08-03
+
+The first production attempt ended with ROLLBACK_COMPLETED after AppDaemon
+reported KeyError: 'charge_shadow'. Production remains on healthy Phase 2.
+Phase 3 is IMPLEMENTED, NOT DEPLOYED, and NOT VALIDATED; this correction has
+not been redeployed.
+
+The charge_shadow section is a required, centrally validated AppDaemon mapping.
+Missing or invalid configuration produces a CONFIG_ERROR and a disabled,
+zero-current shadow recommendation without any physical service call.
+
+The live number.deye_battery_max_charging_current entity reports min 0 A,
+max 350 A, step 1 A, mode box. ENERGY V2 retains its independent operational
+maximum of 240 A. Recommendations are clamped to both that configured
+operational maximum and the live entity maximum when available.

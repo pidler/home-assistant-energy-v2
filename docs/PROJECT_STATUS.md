@@ -56,3 +56,11 @@ The versioned read-only dashboard is deployed at `/energy-v2` with the `prehled`
 - export regulator,
 - ledger calculation or ledger writes,
 - changes to legacy `energy_trading_*` entities.
+
+## Phase 3 corrective status  2026-08-03
+
+The first deployment attempt completed a safe rollback because AppDaemon raised
+KeyError: 'charge_shadow'. Production remains on healthy Phase 2. Phase 3 is
+IMPLEMENTED, NOT DEPLOYED, and NOT VALIDATED. PR #3 now contains a validated
+configuration model and regression coverage, but the correction has not been
+redeployed. Physical control remains deferred.

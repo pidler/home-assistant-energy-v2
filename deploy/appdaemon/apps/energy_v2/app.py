@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -20,6 +21,7 @@ from .config import (
     OPTIONAL_TELEMETRY_KEYS,
     OWNED_ACTUATORS,
     REQUIRED_TELEMETRY_KEYS,
+    parse_charge_shadow_config,
 )
 from .diagnostics import (
     app_status_value,
@@ -92,6 +94,9 @@ class EnergyV2App(hass.Hass):
             self.flow_tick_interval_s = 5
         self.flow_debouncer = FlowDebouncer(self.flow_thresholds)
         self.charge_controller_parameters = self._charge_controller_parameters_from_args()
+        self._charge_config_errors = tuple(
+            error for error in self._config_errors if "charge_shadow" in error or "AppDaemon args" in error
+        )
         self._config_errors = (
             *self._config_errors,
             *validate_charge_controller_parameters(self.charge_controller_parameters),
@@ -306,6 +311,15 @@ class EnergyV2App(hass.Hass):
     def _evaluate_charge_shadow(self) -> None:
         """Publish only shadow diagnostics. This method has no physical service-call path."""
         enabled = parse_bool_state(self.get_state(self.entity_ids["energy_v2_charge_shadow_enabled"])) is True
+        if self._charge_config_errors:
+            reason = "CONFIG_ERROR: " + "; ".join(self._charge_config_errors)
+            self._set_helper("energy_v2_charge_shadow_state", "DISABLED")
+            self._set_helper("energy_v2_charge_recommended_state", "DISABLED")
+            self._set_helper("energy_v2_recommended_deye_charge_current_a", "0")
+            self._set_helper("energy_v2_charge_decision_reason", reason)
+            self._set_helper("energy_v2_charge_block_reason", reason)
+            self._set_helper("energy_v2_charge_shadow_summary", reason)
+            return
         if not enabled:
             return
         now = datetime.now().astimezone()
@@ -318,6 +332,13 @@ class EnergyV2App(hass.Hass):
             deye_battery_voltage_v=parse_float_state(self.get_state(self.entity_ids["deye_battery_voltage"])),
         )
         decision = self.charge_controller.evaluate(telemetry, enabled=True)
+        live_maximum = self._deye_current_entity_maximum_a()
+        if live_maximum is not None and decision.recommended_current_a > live_maximum:
+            decision = replace(
+                decision,
+                recommended_current_a=live_maximum,
+                reason=f"{decision.reason}; clamped to live entity maximum {live_maximum:g} A",
+            )
         self._set_helper("energy_v2_charge_shadow_state", decision.state.value)
         self._set_helper("energy_v2_charge_recommended_state", decision.state.value)
         self._set_helper("energy_v2_recommended_deye_charge_current_a", f"{decision.recommended_current_a:.0f}")
@@ -474,20 +495,19 @@ class EnergyV2App(hass.Hass):
             return Strategy.SERVICE
 
     def _charge_controller_parameters_from_args(self) -> ChargeControllerParameters:
-        defaults = ChargeControllerParameters()
-        source = self.args.get("charge_shadow", {})
-        if not isinstance(source, dict):
-            self._config_errors = (*self._config_errors, "charge_shadow must be a mapping")
-            return defaults
-        values: dict[str, object] = {}
-        for name in ChargeControllerParameters.__dataclass_fields__:
-            raw = source.get(name, getattr(defaults, name))
-            try:
-                values[name] = int(raw) if name == "conflict_attempt_limit" else float(raw)
-            except (TypeError, ValueError):
-                self._config_errors = (*self._config_errors, f"invalid charge_shadow.{name}")
-                values[name] = getattr(defaults, name)
-        return ChargeControllerParameters(**values)  # type: ignore[arg-type]
+        parameters, errors = parse_charge_shadow_config(self.args)
+        self._config_errors = (*self._config_errors, *errors)
+        return parameters
+
+    def _deye_current_entity_maximum_a(self) -> float | None:
+        state = self.get_state(self.entity_ids["deye_charge_current"], attribute="all")
+        if not isinstance(state, dict):
+            return None
+        attributes = state.get("attributes")
+        if not isinstance(attributes, dict):
+            return None
+        maximum = parse_float_state(attributes.get("max"))
+        return maximum if maximum is not None and maximum >= 0 else None
 
     def _publish_flow_diagnostics(self, snapshot: FlowSnapshot, assessment: FlowAssessment) -> None:
         self._set_helper("energy_v2_flow_state", assessment.state.value)

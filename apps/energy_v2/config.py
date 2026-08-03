@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
+from .charge_controller import ChargeControllerParameters, validate_charge_controller_parameters
+
 ENTITY_IDS: dict[str, str] = {
     "solax_soc": "sensor.solax_battery_capacity",
     "solax_battery_power": "sensor.solax_battery_power_charge",
@@ -202,3 +206,29 @@ DEFAULT_CONFLICTING_AUTOMATIONS: tuple[str, ...] = (
     "automation.vypne_vybijeni_deye_a_zapne_self_use_mod_na_solaxu",
     "automation.zpnout_nabijeni_deye_v_ucity_cas",
 )
+
+
+def parse_charge_shadow_config(
+    appdaemon_args: Any,
+) -> tuple[ChargeControllerParameters, tuple[str, ...]]:
+    """Build a validated, fail-safe charge-shadow model from AppDaemon args."""
+    defaults = ChargeControllerParameters()
+    if not isinstance(appdaemon_args, dict):
+        return defaults, ("AppDaemon args must be a mapping",)
+    if "charge_shadow" not in appdaemon_args:
+        return defaults, ("missing required charge_shadow mapping",)
+    source = appdaemon_args.get("charge_shadow")
+    if not isinstance(source, dict):
+        return defaults, ("charge_shadow must be a mapping",)
+    values: dict[str, object] = {}
+    errors: list[str] = []
+    for name in ChargeControllerParameters.__dataclass_fields__:
+        raw = source.get(name, getattr(defaults, name))
+        try:
+            values[name] = int(raw) if name == "conflict_attempt_limit" else float(raw)
+        except (TypeError, ValueError):
+            errors.append(f"invalid charge_shadow.{name}")
+            values[name] = getattr(defaults, name)
+    parameters = ChargeControllerParameters(**values)  # type: ignore[arg-type]
+    errors.extend(f"charge_shadow.{error}" for error in validate_charge_controller_parameters(parameters))
+    return parameters, tuple(errors)

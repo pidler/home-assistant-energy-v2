@@ -45,3 +45,11 @@ Physical control remains inactive:
 - Grid Charge is not implemented,
 - PV Charge is not implemented,
 - active export control is not implemented.
+
+## Phase 3 rollback  2026-08-03
+
+The Phase 3 shadow deployment attempt ended with ROLLBACK_COMPLETED after
+KeyError: 'charge_shadow'. Production was restored to healthy Phase 2.
+Phase 3 remains IMPLEMENTED, NOT DEPLOYED, and NOT VALIDATED. The fix in PR #3
+has not been redeployed. No SolaX or DEYE physical service was called.
+The DEYE current entity range is 0350 A; the ENERGY V2 operational cap is 240 A.
