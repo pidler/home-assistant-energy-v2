@@ -18,3 +18,6 @@ limited current; it only blocks return to full current.
 sensor is not used for control calculations.
 
 All mismatches are diagnostic. The shadow controller cannot invoke physical services.
+
+Confirmation helpers use the **elapsed seconds** convention. FAULT requires 60 seconds of stable,
+valid telemetry before the state machine may return to its current-condition state.

@@ -73,6 +73,8 @@ views:
 
           **Vypočtený safe power / current:** `{{ states('input_number.energy_v2_calculated_safe_charge_power_w') }} W` / `{{ states('input_number.energy_v2_calculated_safe_current_a') }} A`
 
+          **Uplynulé potvrzení start / transfer / return / fault recovery:** `{{ states('input_number.energy_v2_charge_start_confirmation_s') }} s` / `{{ states('input_number.energy_v2_charge_transfer_confirmation_s') }} s` / `{{ states('input_number.energy_v2_charge_return_confirmation_s') }} s` / `{{ states('input_number.energy_v2_charge_fault_recovery_s') }} s`
+
           Požadované režimy: SolaX `Self Use Mode`, DEYE AC coupling `Grid`, Export Surplus `off`, Time of Use `Disabled`, Work mode `Zero Export To CT`.
 
       - type: grid

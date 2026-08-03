@@ -88,6 +88,13 @@ def test_invalid_telemetry_faults_safely() -> None:
     assert decision.recommended_current_a == 0
 
 
+def test_fault_recovers_only_after_sixty_seconds_of_stable_telemetry() -> None:
+    controller = DeyeChargeShadowController()
+    enabled(controller, 0, voltage=0)
+    assert enabled(controller, 59).state is ChargeShadowState.FAULT
+    assert enabled(controller, 60).state is ChargeShadowState.START_CONFIRMATION
+
+
 def test_irregular_window_samples_remain_time_weighted() -> None:
     controller = DeyeChargeShadowController()
     enabled(controller, 0)

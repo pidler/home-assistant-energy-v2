@@ -164,6 +164,10 @@ class DeyeChargeShadowController:
                 p.solax_priority_deye_current_a,
                 "SolaX SOC is below stop threshold",
             )
+        if self.state is ChargeShadowState.FAULT and self._elapsed(telemetry.timestamp) < p.fault_recovery_s:
+            return self._decision(
+                0, "Waiting for fault recovery", p.fault_recovery_s - self._elapsed(telemetry.timestamp)
+            )
         if self.state in {
             ChargeShadowState.DISABLED,
             ChargeShadowState.WAITING_FOR_SOLAX,
