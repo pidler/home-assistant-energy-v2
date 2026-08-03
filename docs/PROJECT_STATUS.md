@@ -1,6 +1,6 @@
 # ENERGY V2 project status
 
-Date: 2026-07-27.
+Date: 2026-08-03.
 
 ## Current stable state
 
@@ -11,7 +11,8 @@ Date: 2026-07-27.
 ## Current pull request
 
 - PR #2 develops phase 2 summer flow monitoring.
-- Phase 2 is not deployed to production.
+- Phase 2 was passively deployed to production from `0a39a6ca2f0cbe295a61a53f5e64f3c624d5fb32` on 2026-08-03.
+- The deployment is running, but remains **DEPLOYED, not yet VALIDATED** by multi-day observation.
 - Phase 2 remains passive and diagnostic only.
 - The production dashboard was deployed separately as a read-only review surface from an earlier
   PR #2 revision; this branch does not update it.
@@ -35,8 +36,8 @@ Date: 2026-07-27.
   - planner remains on the 15 min shadow interval,
   - event counters use edge detection rather than incrementing on every tick.
 
-The dashboard is implemented in the repository for review. The production dashboard is not
-automatically updated by this PR.
+The versioned read-only dashboard is deployed at `/energy-v2` with the `prehled`,
+`diagnostika`, and `nastaveni` views.
 
 ## Not implemented
 
@@ -47,4 +48,3 @@ automatically updated by this PR.
 - export regulator,
 - ledger calculation or ledger writes,
 - changes to legacy `energy_trading_*` entities.
-- production deployment of phase 2 AppDaemon code or phase 2 helpers.

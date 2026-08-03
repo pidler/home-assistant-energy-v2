@@ -10,7 +10,8 @@ Status: complete and merged to `main`.
 
 ## Phase 2 - summer flow monitoring
 
-Status: in review in PR #2.
+Status: passively deployed from `0a39a6ca2f0cbe295a61a53f5e64f3c624d5fb32`; pending
+multi-day production validation in PR #2.
 
 - Monitor current SolaX, DEYE, PV, house, and grid flows.
 - Monitor aggregate grid export against one shared export budget.
@@ -21,17 +22,11 @@ Status: in review in PR #2.
 - Provide a read-only dashboard for status, telemetry, flow diagnostics and export-limit review.
 - Keep all outputs diagnostic only.
 
-## Future phase - passive deployment of phase 2
+## Current work - validate passive Phase 2
 
-After code review:
-
-- review the dashboard together with the phase 2 AppDaemon changes,
-- deploy phase 2 AppDaemon code passively,
-- do not update the already deployed read-only production dashboard without a separately approved
-  Home Assistant Lovelace change,
-- verify helper creation,
-- observe flow states and export average for several days,
-- compare diagnostics with real inverter behavior.
+- observe flow states, warnings, violations, stale diagnostics, and export average for several days,
+- compare diagnostics with real inverter behavior and confirm sign conventions,
+- retain the legacy controller as the only physical controller.
 
 ## Future phase - active PV_CHARGE_DEYE design
 

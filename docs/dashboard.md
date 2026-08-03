@@ -1,6 +1,6 @@
 # ENERGY V2 dashboard
 
-Date: 2026-07-27.
+Date: 2026-08-03.
 
 Dashboard YAML is versioned at:
 
@@ -8,8 +8,9 @@ Dashboard YAML is versioned at:
 homeassistant/dashboards/energy_v2.yaml
 ```
 
-It is designed for a standalone YAML Lovelace dashboard in Home Assistant. A production dashboard
-was deployed separately for review from an earlier PR #2 revision; this branch does not update it.
+It is deployed as the standalone YAML Lovelace dashboard at `/energy-v2` from Phase 2 commit
+`0a39a6ca2f0cbe295a61a53f5e64f3c624d5fb32`. The live dashboard exposes all three documented
+views and remains read-only.
 
 ## Purpose
 

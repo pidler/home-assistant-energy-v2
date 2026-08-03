@@ -1,6 +1,18 @@
 # ENERGY V2 phase 2 - summer flow monitoring
 
-Date: 2026-07-26.
+Date: 2026-08-03.
+
+## Deployment status
+
+Phase 2 was passively deployed on 2026-08-03 from
+`0a39a6ca2f0cbe295a61a53f5e64f3c624d5fb32`. A pre-restart `ha core check` passed and Home
+Assistant Core was restarted once. AppDaemon was not explicitly restarted; live helper histories
+show that it automatically loaded the application: heartbeat updates every 10 seconds and flow
+diagnostics update at the expected short cadence.
+
+The deployment is **DEPLOYED, not VALIDATED**. At deployment verification the app was `HEALTHY`,
+both controller modes were `DISABLED`, and all enable/export/service/safety gate booleans were
+off. Legacy conflicts intentionally remained active. No physical inverter service was issued.
 
 Phase 2 extends the passive AppDaemon shadow controller with diagnostics for current physical
 energy flows. It is still shadow-only and does not control SolaX, DEYE, legacy automations, or any
