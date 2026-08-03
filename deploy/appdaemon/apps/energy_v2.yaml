@@ -33,6 +33,23 @@ energy_v2:
   pv_reserve_w: 1000
   minimum_sell_price: 3.0
   maximum_future_rank: 12
+  charge_shadow:
+    start_solax_soc_pct: 90
+    stop_solax_soc_pct: 80
+    minimum_pv_power_w: 1000
+    start_confirmation_s: 30
+    maximum_deye_charge_current_a: 240
+    solax_priority_deye_current_a: 0
+    solax_discharge_tolerance_w: 300
+    actual_deye_charge_threshold_w: 300
+    transfer_confirmation_s: 10
+    transfer_average_window_s: 10
+    safe_power_reserve_w: 300
+    minimum_safe_deye_charge_power_w: 300
+    return_confirmation_s: 30
+    conflict_attempt_limit: 3
+    conflict_window_s: 60
+    fault_recovery_s: 60
   conflicting_automations:
     - automation.fve_solax_zpet_do_self_use_po_vybiti_deye
     - automation.rizeni_solaxu_podle_kalendare_nakup
