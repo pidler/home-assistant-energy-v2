@@ -460,6 +460,26 @@ def test_flow_tick_runs_without_planner_or_physical_service_calls() -> None:
     assert all("deye_" not in kwargs["entity_id"] for _service, kwargs in app.services)
 
 
+def test_charge_shadow_publishes_helpers_only_and_never_calls_physical_service() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_charge_shadow_enabled"]] = "on"
+    app.states[ENTITY_IDS["deye_battery_voltage"]] = "54"
+    app.states[ENTITY_IDS["deye_charge_current"]] = "240"
+    app.states[ENTITY_IDS["solax_charger_use_mode"]] = "Self Use Mode"
+    app.states[ENTITY_IDS["deye_ac_coupling"]] = "Grid"
+    app.states[ENTITY_IDS["deye_time_of_use"]] = "Disabled"
+    app.states[ENTITY_IDS["deye_work_mode"]] = "Zero Export To CT"
+    app.initialize()
+
+    app._flow_tick()
+
+    assert helper_value(app, "energy_v2_charge_shadow_state") == "START_CONFIRMATION"
+    assert all(service.startswith("input_") for service, _kwargs in app.services)
+    assert all(kwargs["entity_id"].startswith("input_") for _service, kwargs in app.services)
+
+
 def test_flow_tick_persists_warning_and_violation_without_entity_change() -> None:
     module = import_app_module()
     app = module.EnergyV2App()

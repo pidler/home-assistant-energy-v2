@@ -18,6 +18,8 @@ Live verification at approximately 14:39 CEST established:
 This is a successful passive deployment, but **not production validation**. Observe it for several
 days before considering any future active design.
 
+Phase 3 DEYE surplus-charge shadow code is not deployed. Production remains Phase 2 only.
+
 Known state after phase 1:
 
 - passive AppDaemon phase 1 was deployed,

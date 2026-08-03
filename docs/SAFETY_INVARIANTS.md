@@ -4,6 +4,11 @@
 
 Phase 2 is diagnostic only.
 
+Phase 3 DEYE surplus-charge shadow is also diagnostic only. Its controller may write only
+`input_*` ENERGY V2 diagnostic helpers. It must never call a physical `select`, `switch`, `number`,
+`script`, SolaX, or DEYE service. Mode mismatches are reported as `WOULD_CORRECT` or
+`WOULD_ENTER_FAULT`; they are never corrected.
+
 - No physical SolaX actuator may be written.
 - No physical DEYE actuator may be written.
 - `execute_mode()` must remain blocked.

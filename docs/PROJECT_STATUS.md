@@ -36,6 +36,14 @@ Date: 2026-08-03.
   - planner remains on the 15 min shadow interval,
   - event counters use edge detection rather than incrementing on every tick.
 
+## Phase 3 development
+
+Status: **IMPLEMENTED** in `feature/phase-3-deye-charge-shadow`; **NOT DEPLOYED** and **NOT VALIDATED**.
+
+Phase 3 adds a pure shadow state machine for a proposed DEYE charge-current limit from SolaX PV
+surplus. It only publishes diagnostics and mode mismatches. Active charging, sale, and discharge
+remain **DEFERRED**.
+
 The versioned read-only dashboard is deployed at `/energy-v2` with the `prehled`,
 `diagnostika`, and `nastaveni` views.
 

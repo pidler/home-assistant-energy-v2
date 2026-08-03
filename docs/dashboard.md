@@ -26,6 +26,10 @@ The dashboard gives a quick read-only view of ENERGY V2 phase 2:
 - export-limit diagnostics,
 - confirmed system parameters.
 
+Phase 3 development adds a prominent “Nabíjení DEYE – shadow rozhodování” section. It compares the
+actual DEYE current limit and modes with a recommended current, but has no button card, service
+call, or control. The new dashboard YAML is **IMPLEMENTED**, **NOT DEPLOYED**, and **NOT VALIDATED**.
+
 Creating the dashboard file in the repository does not control SolaX, DEYE, Grid Charge, PV Charge,
 export, legacy automations, or any Home Assistant production state.
 
