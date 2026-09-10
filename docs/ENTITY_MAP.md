@@ -91,3 +91,18 @@ charger mode, DEYE AC coupling, Export Surplus, Time of Use, and work mode.
 - `input_number.energy_v2_solax_fv_ledger`
 
 Phase 2 does not write ledger helpers.
+
+## Phase 4 shadow control
+
+Required whole-site balance inputs:
+
+- sensor.solax_inverter_power
+- sensor.deye_power
+- sensor.solax_measured_power (authoritative connection grid feedback)
+
+sensor.solax_house_load is retained only as a legacy diagnostic.
+
+Phase 4 publishes Energy V2 helpers for whole-site load quality, site target, diagnostic budget
+target, DEYE and SolaX requested/predicted/actual power, DEYE allowed power, grid error,
+anti-transfer and break-before-make state, command status/expiry/saturation, and both fixed-quarter
+and trailing-900-second budgets. All are diagnostic input_* entities.

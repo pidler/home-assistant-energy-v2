@@ -5,7 +5,12 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from .config import ENTITY_IDS
-from .models import TelemetrySnapshot
+from .models import (
+    ControlTelemetrySnapshot,
+    NumericTelemetrySample,
+    TelemetryQuality,
+    TelemetrySnapshot,
+)
 
 INVALID_STATES = {"unknown", "unavailable", "", "none", "null"}
 
@@ -90,7 +95,7 @@ class TelemetryReader:
             solax_soc_pct=self._float("solax_soc", errors),
             solax_battery_power_w=self._float("solax_battery_power", errors),
             solax_pv_power_w=self._float("solax_pv_power", errors),
-            solax_house_load_w=self._float("solax_house_load", errors),
+            solax_house_load_w=self._optional_float("solax_house_load"),
             solax_measured_power_w=self._float("solax_measured_power", errors),
             solax_measured_power_l1_w=self._optional_float("solax_measured_power_l1"),
             solax_measured_power_l2_w=self._optional_float("solax_measured_power_l2"),
@@ -110,6 +115,63 @@ class TelemetryReader:
             future_sell_rank=self._optional_float("future_sell_rank"),
             deye_grid_charging_enabled=self._bool("deye_grid_charging", errors),
             deye_export_enabled=self._bool("deye_export_surplus", errors),
+            solax_inverter_power_w=self._float("solax_inverter_power", errors),
+            deye_inverter_power_w=self._float("deye_inverter_power", errors),
         )
         self.last_errors = tuple(errors)
         return snap
+
+    def control_snapshot(
+        self,
+        *,
+        now: datetime | None = None,
+        maximum_age_s: float = 15.0,
+    ) -> ControlTelemetrySnapshot:
+        sampled_at = now or datetime.now().astimezone()
+        return ControlTelemetrySnapshot(
+            sampled_at=sampled_at,
+            solax_inverter_power=self.numeric_sample("solax_inverter_power", sampled_at, maximum_age_s),
+            deye_inverter_power=self.numeric_sample("deye_inverter_power", sampled_at, maximum_age_s),
+            whole_site_grid_power=self.numeric_sample("solax_measured_power", sampled_at, maximum_age_s),
+            solax_battery_power=self.numeric_sample("solax_battery_power", sampled_at, maximum_age_s),
+            deye_battery_power=self.numeric_sample("deye_battery_power", sampled_at, maximum_age_s),
+            solax_soc=self.numeric_sample("solax_soc", sampled_at, maximum_age_s),
+            deye_soc=self.numeric_sample("deye_soc", sampled_at, maximum_age_s),
+        )
+
+    def numeric_sample(self, key: str, now: datetime, maximum_age_s: float) -> NumericTelemetrySample:
+        entity_id = self.entity_ids[key]
+        raw = self.app.get_state(entity_id, attribute="all")
+        if raw is None:
+            return NumericTelemetrySample(None, None, None, False, TelemetryQuality.MISSING, entity_id)
+        state = raw.get("state") if isinstance(raw, dict) else raw
+        value = parse_float_state(state)
+        timestamp = _state_timestamp(raw, now)
+        age_s = max((now - timestamp).total_seconds(), 0.0) if timestamp is not None else None
+        if value is None:
+            return NumericTelemetrySample(None, timestamp, age_s, False, TelemetryQuality.INVALID, entity_id)
+        if timestamp is None:
+            return NumericTelemetrySample(value, None, None, False, TelemetryQuality.INVALID, entity_id)
+        fresh = age_s is not None and age_s <= maximum_age_s
+        quality = TelemetryQuality.VALID if fresh else TelemetryQuality.STALE
+        return NumericTelemetrySample(value, timestamp, age_s, fresh, quality, entity_id)
+
+
+def _state_timestamp(raw: object, fallback: datetime) -> datetime | None:
+    if not isinstance(raw, dict):
+        return fallback
+    value = raw.get("last_updated") or raw.get("last_changed")
+    if value is None:
+        return fallback
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None and fallback.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=fallback.tzinfo)
+    return parsed

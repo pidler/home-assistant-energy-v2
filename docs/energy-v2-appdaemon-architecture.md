@@ -283,3 +283,8 @@ GitHub Actions run syntax check, `ruff check`, `ruff format --check`, and pytest
 Before phase 2, deploy the package to a test AppDaemon environment, verify the actual AppDaemon
 module loading path and logs, then keep shadow mode enabled long enough to compare recommendations
 against the existing system without allowing physical control.
+
+Phase 4 implementation details are documented in docs/phase-4-shadow-control-core.md. The new
+control loop remains independent from the 15-minute planner and 5-second flow safety tick. It
+produces only expiring shadow commands and Energy V2 helper diagnostics; execute_mode remains
+blocked.

@@ -283,3 +283,12 @@ EXPORT_AVERAGE_LIMIT_VIOLATION
 ```
 
 Phase 2 still does not perform any physical response.
+
+## Phase 4 shadow diagnostics
+
+The overview shows whole-site estimated load, sample quality, requested and budget-constrained
+site targets, requested/allowed/predicted/actual inverter powers, grid error, anti-transfer state,
+break-before-make state, command status and expiry.
+
+The diagnostics view shows both fixed-quarter and trailing-900-second export budgets. These cards
+are read-only and do not select a legally authoritative averaging model.

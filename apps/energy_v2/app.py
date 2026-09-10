@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import appdaemon.plugins.hass.hassapi as hass
 
+from .allocator import AllocationParameters, BatteryAvailability, ShadowPowerAllocator
 from .charge_controller import (
     ChargeControllerParameters,
     ChargeTelemetry,
@@ -49,16 +50,26 @@ from .flow import (
     validate_flow_thresholds,
     validate_system_parameters,
 )
-from .models import AppStatus, Mode, PlannerDecision, Strategy, ValidationResult
+from .models import (
+    AppStatus,
+    BatteryId,
+    Mode,
+    PlannerDecision,
+    SiteCommand,
+    Strategy,
+    TelemetryQuality,
+    ValidationResult,
+)
 from .planner import plan_shadow_mode
 from .safety import find_active_conflicts, find_missing_entities, safe_to_enable, validate_telemetry
+from .shadow_controller import ShadowControlCore
 from .telemetry import TelemetryReader, parse_bool_state, parse_float_state, parse_text_state
 
 
 class EnergyV2App(hass.Hass):
     """Passive shadow-only Energy V2 AppDaemon application.
 
-    Phase 1 intentionally performs no physical SolaX/DEYE control.
+    Phases 1-4 intentionally perform no physical SolaX/DEYE control.
     """
 
     def initialize(self) -> None:
@@ -106,8 +117,21 @@ class EnergyV2App(hass.Hass):
             window_s=self.system_parameters.export_average_window_s,
             max_sample_age_s=self.system_parameters.export_sample_max_age_s,
         )
+        self.control_tick_interval_s = float(self.args.get("shadow_control_interval_s", 5.0))
+        self.shadow_site_target_w = float(self.args.get("shadow_site_target_w", 0.0))
+        self.shadow_control = ShadowControlCore(
+            allocator=ShadowPowerAllocator(
+                AllocationParameters(
+                    operational_export_limit_w=self.system_parameters.target_export_limit_w,
+                    slew_limit_w_per_tick=float(self.args.get("shadow_slew_limit_w_per_tick", 2000.0)),
+                    zero_flow_tolerance_w=float(self.args.get("shadow_zero_flow_tolerance_w", 300.0)),
+                    zero_flow_confirmation_s=float(self.args.get("shadow_zero_flow_confirmation_s", 10.0)),
+                )
+            )
+        )
         self._debounce_handle: Any | None = None
         self._flow_tick_running = False
+        self._control_tick_running = False
         self._shadow_tick_running = False
         self._last_decision: PlannerDecision | None = None
         self._last_conflicts: tuple[str, ...] = ()
@@ -128,6 +152,7 @@ class EnergyV2App(hass.Hass):
         self._register_state_listeners()
         self.run_every(self._shadow_tick, "now+5", 15 * 60)
         self.run_every(self._flow_tick, "now+5", self.flow_tick_interval_s)
+        self.run_every(self._control_tick, "now+7", self.control_tick_interval_s)
         self.run_every(self._heartbeat_tick, "now+10", 10)
         self._set_helper("energy_v2_actual_mode", mode_value(Mode.DISABLED))
         self._set_helper("energy_v2_requested_mode", mode_value(Mode.DISABLED))
@@ -308,6 +333,112 @@ class EnergyV2App(hass.Hass):
         finally:
             self._flow_tick_running = False
 
+    def _control_tick(self, kwargs: dict[str, Any] | None = None) -> None:
+        """Evaluate and publish Phase 4 shadow commands without executing them."""
+        if self._control_tick_running:
+            self._warning("skipping overlapping shadow control tick")
+            return
+        if parse_bool_state(self.get_state(self.entity_ids["energy_v2_control_shadow_enabled"])) is not True:
+            return
+        self._control_tick_running = True
+        try:
+            now = datetime.now().astimezone()
+            telemetry = self.telemetry.control_snapshot(now=now)
+            command = SiteCommand(
+                command_id=f"shadow-{int(now.timestamp())}",
+                created_at=now,
+                expires_at=now + timedelta(seconds=max(self.control_tick_interval_s * 3, 15)),
+                grid_target_w=self.shadow_site_target_w,
+                max_export_w=self.system_parameters.target_export_limit_w,
+                transfer_allowed=False,
+                preferred_battery=BatteryId.DEYE,
+                grid_charge_allowed=False,
+            )
+            deye = BatteryAvailability(
+                BatteryId.DEYE,
+                telemetry.deye_soc.quality is TelemetryQuality.VALID
+                and parse_bool_state(self.get_state(self.entity_ids["deye_connection"])) is True,
+                telemetry.deye_soc.value,
+                self.system_parameters.deye_min_soc_pct,
+                float(self.args.get("deye_max_soc_pct", 100.0)),
+                self.system_parameters.deye_rated_power_w,
+                self.system_parameters.deye_rated_power_w,
+                telemetry.deye_battery_power.value,
+            )
+            solax = BatteryAvailability(
+                BatteryId.SOLAX,
+                telemetry.solax_soc.quality is TelemetryQuality.VALID,
+                telemetry.solax_soc.value,
+                self.system_parameters.solax_min_soc_pct,
+                100.0,
+                self.system_parameters.solax_rated_power_w,
+                self.system_parameters.solax_rated_power_w,
+                telemetry.solax_battery_power.value,
+            )
+            result = self.shadow_control.evaluate(
+                telemetry,
+                command,
+                pv_power_w=parse_float_state(self.get_state(self.entity_ids["solax_pv_power"])) or 0.0,
+                deye=deye,
+                solax=solax,
+            )
+            self._publish_shadow_control_diagnostics(result)
+        except Exception as exc:  # pragma: no cover - AppDaemon runtime guard
+            error_text = f"unexpected shadow control tick error: {exc!r}"
+            self._set_helper("energy_v2_command_status", "FAULT")
+            self._set_helper("energy_v2_saturation_reason", error_text)
+            self._set_helper("energy_v2_last_evaluation_error", error_text)
+            self._error(error_text)
+        finally:
+            self._control_tick_running = False
+
+    def _publish_shadow_control_diagnostics(self, result: object) -> None:
+        from .shadow_controller import ShadowControlResult
+
+        if not isinstance(result, ShadowControlResult):
+            raise TypeError("invalid shadow control result")
+        load = result.load
+        allocation = result.allocation
+        fixed = result.fixed_quarter_budget
+        trailing = result.trailing_budget
+        if load.load_w is not None:
+            self._set_helper("energy_v2_whole_site_load_w", f"{load.load_w:.1f}")
+        self._set_helper("energy_v2_load_quality", load.quality.value)
+        self._set_helper("energy_v2_load_summary", load.reason)
+        self._set_helper("energy_v2_requested_site_target_w", f"{allocation.requested_grid_target_w:.1f}")
+        self._set_helper("energy_v2_budget_diagnostic_target_w", f"{result.budget_diagnostic_target_w:.1f}")
+        self._set_helper("energy_v2_deye_requested_power_w", f"{result.deye.requested_power_w:.1f}")
+        self._set_helper("energy_v2_deye_allowed_power_w", f"{result.deye.allowed_power_w:.1f}")
+        self._set_helper("energy_v2_deye_predicted_power_w", f"{result.deye.simulated_power_w:.1f}")
+        if result.deye.measured_actual_power_w is not None:
+            self._set_helper("energy_v2_deye_actual_power_w", f"{result.deye.measured_actual_power_w:.1f}")
+        self._set_helper("energy_v2_solax_requested_power_w", f"{result.solax.requested_power_w:.1f}")
+        self._set_helper("energy_v2_solax_predicted_power_w", f"{result.solax.simulated_power_w:.1f}")
+        if result.solax.measured_actual_power_w is not None:
+            self._set_helper("energy_v2_solax_actual_power_w", f"{result.solax.measured_actual_power_w:.1f}")
+        if result.grid_actual_w is not None:
+            self._set_helper("energy_v2_whole_site_grid_actual_w", f"{result.grid_actual_w:.1f}")
+        if result.grid_error_w is not None:
+            self._set_helper("energy_v2_grid_error_w", f"{result.grid_error_w:.1f}")
+        anti_state = (
+            "FAULT" if result.runtime_anti_transfer_state.startswith("FAULT") else result.runtime_anti_transfer_state
+        )
+        self._set_helper("energy_v2_anti_transfer_state", anti_state)
+        self._set_helper("energy_v2_break_before_make_state", allocation.break_before_make_state)
+        self._set_helper("energy_v2_command_status", result.command_status.value)
+        self._set_helper("energy_v2_command_expiry", allocation.site_command.expires_at.isoformat())
+        self._set_helper("energy_v2_saturation_reason", result.reason)
+        self._set_helper("energy_v2_fixed_used_export_kwh", f"{fixed.used_export_kwh:.4f}")
+        self._set_helper("energy_v2_fixed_remaining_operational_kwh", f"{fixed.remaining_operational_kwh:.4f}")
+        self._set_helper("energy_v2_fixed_remaining_legal_kwh", f"{fixed.remaining_legal_kwh:.4f}")
+        self._set_helper("energy_v2_fixed_seconds_remaining", f"{fixed.seconds_remaining:.1f}")
+        self._set_helper("energy_v2_fixed_budget_power_w", f"{fixed.budget_power_w:.1f}")
+        self._set_helper("energy_v2_fixed_projected_average_w", f"{fixed.projected_average_w:.1f}")
+        self._set_helper("energy_v2_trailing_remaining_operational_kwh", f"{trailing.remaining_operational_kwh:.4f}")
+        self._set_helper("energy_v2_trailing_remaining_legal_kwh", f"{trailing.remaining_legal_kwh:.4f}")
+        self._set_helper("energy_v2_trailing_budget_power_w", f"{trailing.budget_power_w:.1f}")
+        self._set_helper("energy_v2_trailing_projected_average_w", f"{trailing.projected_average_w:.1f}")
+
     def _evaluate_charge_shadow(self) -> None:
         """Publish only shadow diagnostics. This method has no physical service-call path."""
         enabled = parse_bool_state(self.get_state(self.entity_ids["energy_v2_charge_shadow_enabled"])) is True
@@ -462,20 +593,7 @@ class EnergyV2App(hass.Hass):
             self.call_service("input_text/set_value", entity_id=entity_id, value=value[:255])
         elif domain == "input_datetime":
             self.call_service("input_datetime/set_datetime", entity_id=entity_id, datetime=value)
-        elif domain == "input_number" and (
-            key
-            in {
-                "energy_v2_instant_grid_export_w",
-                "energy_v2_rolling_15min_export_w",
-                "energy_v2_export_window_covered_s",
-                "energy_v2_export_sample_age_s",
-            }
-            or key.startswith("energy_v2_charge_")
-            or key.startswith("energy_v2_solax_")
-            or key.startswith("energy_v2_deye_")
-            or key.startswith("energy_v2_calculated_")
-            or key == "energy_v2_recommended_deye_charge_current_a"
-        ):
+        elif domain == "input_number" and key.startswith("energy_v2_"):
             self.call_service("input_number/set_value", entity_id=entity_id, value=float(value))
         elif domain == "input_boolean" and key == "energy_v2_safe_to_enable":
             service = "input_boolean/turn_on" if value == "on" else "input_boolean/turn_off"

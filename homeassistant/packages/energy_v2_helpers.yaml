@@ -23,6 +23,10 @@ input_boolean:
     name: ENERGY V2 DEYE charge shadow povolen
     initial: false
 
+  energy_v2_control_shadow_enabled:
+    name: ENERGY V2 Phase 4 control shadow povolen
+    initial: false
+
 input_select:
   energy_v2_strategy:
     name: ENERGY V2 strategie
@@ -104,6 +108,21 @@ input_select:
     name: ENERGY V2 DEYE charge stav shody rezimu
     options: [MATCHED, WOULD_CORRECT, WOULD_ENTER_FAULT, UNAVAILABLE]
     initial: UNAVAILABLE
+
+  energy_v2_load_quality:
+    name: ENERGY V2 kvalita odhadu spotreby
+    options: [VALID, STALE, MISSING, INVALID, SKEWED]
+    initial: MISSING
+
+  energy_v2_anti_transfer_state:
+    name: ENERGY V2 anti-transfer stav
+    options: [CLEAR, UNVERIFIED, FAULT]
+    initial: UNVERIFIED
+
+  energy_v2_command_status:
+    name: ENERGY V2 shadow command stav
+    options: [READY, SATURATED, BLOCKED, EXPIRED, BREAK_BEFORE_MAKE, FAULT]
+    initial: BLOCKED
 
 input_number:
   energy_v2_deye_fv_ledger:
@@ -248,6 +267,182 @@ input_number:
     step: 1
     initial: 0
 
+  energy_v2_whole_site_load_w:
+    name: ENERGY V2 odhad spotreby celeho objektu
+    min: 0
+    max: 50000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_requested_site_target_w:
+    name: ENERGY V2 pozadovany grid target
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_budget_diagnostic_target_w:
+    name: ENERGY V2 grid target po diagnostickem budgetu
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_deye_requested_power_w:
+    name: ENERGY V2 DEYE pozadovany vykon
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_deye_allowed_power_w:
+    name: ENERGY V2 DEYE povoleny vykon
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_deye_predicted_power_w:
+    name: ENERGY V2 DEYE predikovany vykon
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_deye_actual_power_w:
+    name: ENERGY V2 DEYE skutecny vykon
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_solax_requested_power_w:
+    name: ENERGY V2 SolaX pozadovany vykon
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_solax_predicted_power_w:
+    name: ENERGY V2 SolaX predikovany vykon
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_solax_actual_power_w:
+    name: ENERGY V2 SolaX skutecny vykon
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_whole_site_grid_actual_w:
+    name: ENERGY V2 skutecny whole-site grid vykon
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_grid_error_w:
+    name: ENERGY V2 odchylka grid targetu
+    min: -30000
+    max: 30000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_fixed_used_export_kwh:
+    name: ENERGY V2 fixed quarter vyuzity export
+    min: 0
+    max: 10
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_fixed_remaining_operational_kwh:
+    name: ENERGY V2 fixed quarter zbyva provozne
+    min: 0
+    max: 10
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_fixed_remaining_legal_kwh:
+    name: ENERGY V2 fixed quarter zbyva legalne
+    min: 0
+    max: 10
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_fixed_seconds_remaining:
+    name: ENERGY V2 fixed quarter zbyvajici cas
+    min: 0
+    max: 900
+    step: 1
+    unit_of_measurement: s
+    initial: 0
+
+  energy_v2_fixed_budget_power_w:
+    name: ENERGY V2 fixed quarter budget vykonu
+    min: 0
+    max: 50000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_fixed_projected_average_w:
+    name: ENERGY V2 fixed quarter projektovany prumer
+    min: 0
+    max: 50000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_trailing_remaining_operational_kwh:
+    name: ENERGY V2 trailing 900s zbyva provozne
+    min: 0
+    max: 10
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_trailing_remaining_legal_kwh:
+    name: ENERGY V2 trailing 900s zbyva legalne
+    min: 0
+    max: 10
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_trailing_budget_power_w:
+    name: ENERGY V2 trailing 900s budget vykonu
+    min: 0
+    max: 50000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
+  energy_v2_trailing_projected_average_w:
+    name: ENERGY V2 trailing 900s projektovany prumer
+    min: 0
+    max: 50000
+    step: 1
+    unit_of_measurement: W
+    initial: 0
+
 input_text:
   energy_v2_last_fault:
     name: ENERGY V2 posledni chyba
@@ -301,6 +496,18 @@ input_text:
     name: ENERGY V2 DEYE charge souhrn neshod
     max: 255
 
+  energy_v2_load_summary:
+    name: ENERGY V2 souhrn odhadu spotreby
+    max: 255
+
+  energy_v2_break_before_make_state:
+    name: ENERGY V2 break-before-make stav
+    max: 255
+
+  energy_v2_saturation_reason:
+    name: ENERGY V2 duvod saturace nebo blokace
+    max: 255
+
 input_datetime:
   energy_v2_heartbeat:
     name: ENERGY V2 heartbeat
@@ -324,5 +531,10 @@ input_datetime:
 
   energy_v2_last_valid_export_sample:
     name: ENERGY V2 posledni validni exportni vzorek
+    has_date: true
+    has_time: true
+
+  energy_v2_command_expiry:
+    name: ENERGY V2 expirace shadow commandu
     has_date: true
     has_time: true

@@ -77,6 +77,27 @@ views:
 
           Požadované režimy: SolaX `Self Use Mode`, DEYE AC coupling `Grid`, Export Surplus `off`, Time of Use `Disabled`, Work mode `Zero Export To CT`.
 
+      - type: markdown
+        title: Phase 4 shadow control core
+        content: |
+          ## Pouze simulace — žádný příkaz není odeslán do měničů
+
+          **Command:** `{{ states('input_select.energy_v2_command_status') }}`
+
+          **Load / quality:** `{{ states('input_number.energy_v2_whole_site_load_w') }} W` / `{{ states('input_select.energy_v2_load_quality') }}`
+
+          **Site target / budget target / grid actual / error:** `{{ states('input_number.energy_v2_requested_site_target_w') }}` / `{{ states('input_number.energy_v2_budget_diagnostic_target_w') }}` / `{{ states('input_number.energy_v2_whole_site_grid_actual_w') }}` / `{{ states('input_number.energy_v2_grid_error_w') }} W`
+
+          **DEYE requested / allowed / predicted / actual:** `{{ states('input_number.energy_v2_deye_requested_power_w') }}` / `{{ states('input_number.energy_v2_deye_allowed_power_w') }}` / `{{ states('input_number.energy_v2_deye_predicted_power_w') }}` / `{{ states('input_number.energy_v2_deye_actual_power_w') }} W`
+
+          **SolaX requested / predicted / actual:** `{{ states('input_number.energy_v2_solax_requested_power_w') }}` / `{{ states('input_number.energy_v2_solax_predicted_power_w') }}` / `{{ states('input_number.energy_v2_solax_actual_power_w') }} W`
+
+          **Anti-transfer / break-before-make:** `{{ states('input_select.energy_v2_anti_transfer_state') }}` / `{{ states('input_text.energy_v2_break_before_make_state') }}`
+
+          **Expirace:** `{{ states('input_datetime.energy_v2_command_expiry') }}`
+
+          **Důvod:** `{{ states('input_text.energy_v2_saturation_reason') }}`
+
       - type: grid
         title: Exportní limit
         columns: 2
@@ -267,6 +288,7 @@ views:
           - sensor.solax_pv_power_total
           - sensor.solax_house_load
           - sensor.solax_measured_power
+          - sensor.solax_inverter_power
           - sensor.solax_grid_import
           - sensor.solax_grid_export
 
@@ -275,6 +297,7 @@ views:
         show_header_toggle: false
         entities:
           - sensor.deye_battery
+          - sensor.deye_power
           - sensor.battery_power_otoceny
           - sensor.deye_battery_power
           - sensor.deye_battery_state
@@ -405,6 +428,19 @@ views:
           **Souhrn:** `{{ states('input_text.energy_v2_export_limit_summary') }}`
 
           **Poslední average violation:** `{{ states('input_datetime.energy_v2_last_export_average_violation') }}`
+
+      - type: markdown
+        title: Phase 4 exportní rozpočty
+        content: |
+          **Fixed quarter used / remaining operational / remaining legal:** `{{ states('input_number.energy_v2_fixed_used_export_kwh') }}` / `{{ states('input_number.energy_v2_fixed_remaining_operational_kwh') }}` / `{{ states('input_number.energy_v2_fixed_remaining_legal_kwh') }} kWh`
+
+          **Fixed seconds / budget / projected average:** `{{ states('input_number.energy_v2_fixed_seconds_remaining') }} s` / `{{ states('input_number.energy_v2_fixed_budget_power_w') }}` / `{{ states('input_number.energy_v2_fixed_projected_average_w') }} W`
+
+          **Trailing remaining operational / legal:** `{{ states('input_number.energy_v2_trailing_remaining_operational_kwh') }}` / `{{ states('input_number.energy_v2_trailing_remaining_legal_kwh') }} kWh`
+
+          **Trailing budget / projected average:** `{{ states('input_number.energy_v2_trailing_budget_power_w') }}` / `{{ states('input_number.energy_v2_trailing_projected_average_w') }} W`
+
+          Oba modely jsou pouze diagnostické; žádný není v této fázi prohlášen za právně autoritativní.
 
       - type: history-graph
         title: Export okamžitě vs 15min průměr

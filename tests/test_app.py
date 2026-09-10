@@ -108,6 +108,7 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["solax_battery_power"]: "0",
             ENTITY_IDS["solax_pv_power"]: "5000",
             ENTITY_IDS["solax_house_load"]: "1000",
+            ENTITY_IDS["solax_inverter_power"]: "1000",
             ENTITY_IDS["solax_measured_power"]: "0",
             ENTITY_IDS["solax_measured_power_l1"]: "0",
             ENTITY_IDS["solax_measured_power_l2"]: "0",
@@ -115,6 +116,7 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["solax_grid_import"]: "0",
             ENTITY_IDS["solax_grid_export"]: "0",
             ENTITY_IDS["deye_soc"]: "50",
+            ENTITY_IDS["deye_inverter_power"]: "0",
             ENTITY_IDS["deye_battery_power"]: "0",
             ENTITY_IDS["deye_battery_power_raw"]: "0",
             ENTITY_IDS["deye_battery_state"]: "idle",
@@ -146,6 +148,7 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["energy_v2_export_limit_summary"]: "",
             ENTITY_IDS["energy_v2_deye_fv_ledger"]: "1",
             ENTITY_IDS["energy_v2_solax_fv_ledger"]: "0",
+            ENTITY_IDS["energy_v2_control_shadow_enabled"]: "on",
         }
     )
     states.update({entity_id: "off" for entity_id in DEFAULT_CONFLICTING_AUTOMATIONS})
@@ -155,6 +158,32 @@ def valid_states() -> dict[str, Any]:
 
 def helper_value(app: StubHass, key: str) -> Any:
     return app.states[ENTITY_IDS[key]]
+
+
+def test_phase4_control_tick_publishes_helpers_only() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    app.services.clear()
+
+    app._control_tick()
+
+    assert helper_value(app, "energy_v2_load_quality") == "VALID"
+    assert helper_value(app, "energy_v2_command_status") in {"READY", "SATURATED", "BREAK_BEFORE_MAKE"}
+    assert all(service.startswith("input_") for service, _kwargs in app.services)
+    assert all(kwargs["entity_id"].startswith("input_") for _service, kwargs in app.services)
+    assert all(kwargs["entity_id"] not in OWNED_ACTUATORS for _service, kwargs in app.services)
+
+
+def test_planner_control_and_flow_intervals_are_separate() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    intervals = [interval for _callback, interval in app.run_every_callbacks]
+    assert 900 in intervals
+    assert intervals.count(5) >= 2
 
 
 def test_stubbed_appdaemon_import_matches_appdaemon_module_config() -> None:

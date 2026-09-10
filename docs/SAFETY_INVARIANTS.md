@@ -9,6 +9,10 @@ Phase 3 DEYE surplus-charge shadow is also diagnostic only. Its controller may w
 `script`, SolaX, or DEYE service. Mode mismatches are reported as `WOULD_CORRECT` or
 `WOULD_ENTER_FAULT`; they are never corrected.
 
+Phase 4 shadow control is also diagnostic only. Its allocator and inverter adapters are pure
+Python and have no Home Assistant or Modbus write dependency. Proposed DEYE/SolaX settings are
+stored in command results, never sent as service calls.
+
 - No physical SolaX actuator may be written.
 - No physical DEYE actuator may be written.
 - `execute_mode()` must remain blocked.
