@@ -15,6 +15,7 @@
 - `sensor.deye_battery`
 - `sensor.battery_power_otoceny`
 - `sensor.deye_battery_power`
+- `sensor.deye_battery_voltage`
 - `sensor.deye_battery_state`
 - `sensor.deye_grid_power`
 - `sensor.deye_external_power`
@@ -50,6 +51,22 @@ Authority notes:
 
 These entities are diagnostic outputs only. They do not control SolaX, DEYE, Grid Charge, PV Charge
 or export.
+
+## Phase 3 DEYE surplus-charge shadow
+
+- `input_boolean.energy_v2_charge_shadow_enabled` (default off)
+- `input_select.energy_v2_charge_shadow_state`
+- `input_select.energy_v2_charge_recommended_state`
+- `input_number.energy_v2_recommended_deye_charge_current_a`
+- `input_text.energy_v2_charge_decision_reason`
+- `input_text.energy_v2_charge_block_reason`
+- `input_text.energy_v2_charge_mode_mismatches`
+- `input_text.energy_v2_charge_shadow_summary`
+- rolling average and safe-current helpers prefixed `energy_v2_*_average_` and
+  `energy_v2_calculated_`.
+
+Read-only physical comparison inputs include `number.deye_battery_max_charging_current`, SolaX
+charger mode, DEYE AC coupling, Export Surplus, Time of Use, and work mode.
 
 ## Existing safety and runtime helpers
 

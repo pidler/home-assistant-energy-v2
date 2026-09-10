@@ -7,6 +7,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from apps.energy_v2.config import DEFAULT_CONFLICTING_AUTOMATIONS, ENTITY_IDS, OPTIONAL_TELEMETRY_KEYS, OWNED_ACTUATORS
 from apps.energy_v2.diagnostics import compact_reasons
 from apps.energy_v2.models import Mode
@@ -14,7 +16,7 @@ from apps.energy_v2.models import Mode
 
 class StubHass:
     def __init__(self) -> None:
-        self.args: dict[str, Any] = {}
+        self.args: dict[str, Any] = {"charge_shadow": {}}
         self.states: dict[str, Any] = {}
         self.services: list[tuple[str, dict[str, Any]]] = []
         self.logs: list[tuple[str, str]] = []
@@ -24,11 +26,16 @@ class StubHass:
         self.turned_off: list[str] = []
 
     def get_state(self, entity_id: str, **kwargs: Any) -> Any:
+        value = self.states.get(entity_id)
         if kwargs.get("attribute") == "all":
-            if entity_id not in self.states:
+            if value is None:
                 return None
-            return {"state": self.states[entity_id]}
-        return self.states.get(entity_id)
+            if isinstance(value, dict):
+                return value
+            return {"state": value}
+        if isinstance(value, dict):
+            return value.get("state")
+        return value
 
     def call_service(self, service: str, **kwargs: Any) -> None:
         self.services.append((service, kwargs))
@@ -460,6 +467,26 @@ def test_flow_tick_runs_without_planner_or_physical_service_calls() -> None:
     assert all("deye_" not in kwargs["entity_id"] for _service, kwargs in app.services)
 
 
+def test_charge_shadow_publishes_helpers_only_and_never_calls_physical_service() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_charge_shadow_enabled"]] = "on"
+    app.states[ENTITY_IDS["deye_battery_voltage"]] = "54"
+    app.states[ENTITY_IDS["deye_charge_current"]] = "240"
+    app.states[ENTITY_IDS["solax_charger_use_mode"]] = "Self Use Mode"
+    app.states[ENTITY_IDS["deye_ac_coupling"]] = "Grid"
+    app.states[ENTITY_IDS["deye_time_of_use"]] = "Disabled"
+    app.states[ENTITY_IDS["deye_work_mode"]] = "Zero Export To CT"
+    app.initialize()
+
+    app._flow_tick()
+
+    assert helper_value(app, "energy_v2_charge_shadow_state") == "START_CONFIRMATION"
+    assert all(service.startswith("input_") for service, _kwargs in app.services)
+    assert all(kwargs["entity_id"].startswith("input_") for _service, kwargs in app.services)
+
+
 def test_flow_tick_persists_warning_and_violation_without_entity_change() -> None:
     module = import_app_module()
     app = module.EnergyV2App()
@@ -606,3 +633,55 @@ def test_compact_reasons_is_deterministic_and_truncates_long_output() -> None:
     assert len(text) <= 80
     assert text.startswith("reason-01-")
     assert "+20 total" in text
+
+
+def test_production_deployment_yaml_initializes_charge_shadow_fail_safe() -> None:
+    module = import_app_module()
+    deployment = yaml.safe_load((Path(__file__).parents[1] / "deploy/appdaemon/apps/energy_v2.yaml").read_text())
+    assert isinstance(deployment, dict)
+    assert isinstance(deployment["energy_v2"]["charge_shadow"], dict)
+    app = module.EnergyV2App()
+    app.args = deployment["energy_v2"]
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_charge_shadow_enabled"]] = "on"
+    app.states[ENTITY_IDS["deye_charge_current"]] = {
+        "state": "240",
+        "attributes": {"min": 0, "max": 350, "step": 1, "mode": "box"},
+    }
+    app.initialize()
+    app._evaluate_charge_shadow()
+    assert app.charge_controller is not None
+    assert not app._charge_config_errors
+    assert app.charge_controller_parameters.maximum_deye_charge_current_a == 240
+    assert all(service.split("/", 1)[0].startswith("input_") for service, _ in app.services)
+
+
+def test_missing_charge_shadow_is_diagnostic_disabled_and_never_physical() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.args = {}
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_charge_shadow_enabled"]] = "on"
+    app.initialize()
+    app._evaluate_charge_shadow()
+    assert "missing required charge_shadow mapping" in app._charge_config_errors
+    assert helper_value(app, "energy_v2_charge_shadow_state") == "DISABLED"
+    assert helper_value(app, "energy_v2_charge_recommended_state") == "DISABLED"
+    assert float(helper_value(app, "energy_v2_recommended_deye_charge_current_a")) == 0
+    assert "CONFIG_ERROR" in helper_value(app, "energy_v2_charge_block_reason")
+    assert all(service.split("/", 1)[0].startswith("input_") for service, _ in app.services)
+
+
+def test_recommendation_is_clamped_to_live_entity_maximum() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.args = {"charge_shadow": {"maximum_deye_charge_current_a": 240}}
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_charge_shadow_enabled"]] = "on"
+    app.states[ENTITY_IDS["deye_charge_current"]] = {
+        "state": "100",
+        "attributes": {"min": 0, "max": 100, "step": 1, "mode": "box"},
+    }
+    app.initialize()
+    app._evaluate_charge_shadow()
+    assert float(helper_value(app, "energy_v2_recommended_deye_charge_current_a")) <= 100

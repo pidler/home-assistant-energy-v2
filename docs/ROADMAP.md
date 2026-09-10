@@ -32,6 +32,14 @@ multi-day production validation in PR #2.
 
 Not started.
 
+## Phase 3 - DEYE surplus-charge shadow
+
+Status: **IMPLEMENTED** in a feature branch; **NOT DEPLOYED**, **NOT VALIDATED**.
+
+- pure time-aware charge state machine and rolling 10-second measurements,
+- recommended DEYE current and required mode comparison only,
+- no execution interface and no physical service calls.
+
 Prerequisites:
 
 - confirmed sign conventions in production,

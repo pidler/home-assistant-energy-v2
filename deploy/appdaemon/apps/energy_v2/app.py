@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
 import appdaemon.plugins.hass.hassapi as hass
 
+from .charge_controller import (
+    ChargeControllerParameters,
+    ChargeTelemetry,
+    DeyeChargeShadowController,
+    validate_charge_controller_parameters,
+)
 from .config import (
     DEFAULT_CONFLICTING_AUTOMATIONS,
     ENERGY_V2_HELPER_KEYS,
@@ -13,6 +21,7 @@ from .config import (
     OPTIONAL_TELEMETRY_KEYS,
     OWNED_ACTUATORS,
     REQUIRED_TELEMETRY_KEYS,
+    parse_charge_shadow_config,
 )
 from .diagnostics import (
     app_status_value,
@@ -84,6 +93,15 @@ class EnergyV2App(hass.Hass):
             self.flow_thresholds = FlowThresholds()
             self.flow_tick_interval_s = 5
         self.flow_debouncer = FlowDebouncer(self.flow_thresholds)
+        self.charge_controller_parameters = self._charge_controller_parameters_from_args()
+        self._charge_config_errors = tuple(
+            error for error in self._config_errors if "charge_shadow" in error or "AppDaemon args" in error
+        )
+        self._config_errors = (
+            *self._config_errors,
+            *validate_charge_controller_parameters(self.charge_controller_parameters),
+        )
+        self.charge_controller = DeyeChargeShadowController(self.charge_controller_parameters)
         self.export_average_tracker = RollingExportAverageTracker(
             window_s=self.system_parameters.export_average_window_s,
             max_sample_age_s=self.system_parameters.export_sample_max_age_s,
@@ -100,6 +118,8 @@ class EnergyV2App(hass.Hass):
         self._missing_energy_v2_helpers: tuple[str, ...] = ()
         self._missing_conflicting_automations: tuple[str, ...] = ()
         self._missing_owned_actuators: tuple[str, ...] = ()
+        self._charge_conflict_times: deque[datetime] = deque()
+        self._charge_last_mismatch = ""
 
         self._info("initializing passive shadow application")
         self._refresh_energy_v2_helper_existence()
@@ -279,6 +299,7 @@ class EnergyV2App(hass.Hass):
             snapshot = self.telemetry.snapshot()
             telemetry_validation = validate_telemetry(snapshot)
             self._evaluate_flow_monitoring(snapshot, telemetry_validation)
+            self._evaluate_charge_shadow()
         except Exception as exc:  # pragma: no cover - AppDaemon runtime guard
             error_text = f"unexpected flow tick error: {exc!r}"
             self._set_helper("energy_v2_last_evaluation_error", error_text)
@@ -286,6 +307,104 @@ class EnergyV2App(hass.Hass):
             self._error(error_text)
         finally:
             self._flow_tick_running = False
+
+    def _evaluate_charge_shadow(self) -> None:
+        """Publish only shadow diagnostics. This method has no physical service-call path."""
+        enabled = parse_bool_state(self.get_state(self.entity_ids["energy_v2_charge_shadow_enabled"])) is True
+        if self._charge_config_errors:
+            reason = "CONFIG_ERROR: " + "; ".join(self._charge_config_errors)
+            self._set_helper("energy_v2_charge_shadow_state", "DISABLED")
+            self._set_helper("energy_v2_charge_recommended_state", "DISABLED")
+            self._set_helper("energy_v2_recommended_deye_charge_current_a", "0")
+            self._set_helper("energy_v2_charge_decision_reason", reason)
+            self._set_helper("energy_v2_charge_block_reason", reason)
+            self._set_helper("energy_v2_charge_shadow_summary", reason)
+            return
+        if not enabled:
+            return
+        now = datetime.now().astimezone()
+        telemetry = ChargeTelemetry(
+            timestamp=now,
+            solax_soc_pct=parse_float_state(self.get_state(self.entity_ids["solax_soc"])),
+            solax_pv_power_w=parse_float_state(self.get_state(self.entity_ids["solax_pv_power"])),
+            solax_battery_power_w=parse_float_state(self.get_state(self.entity_ids["solax_battery_power"])),
+            deye_battery_power_w=parse_float_state(self.get_state(self.entity_ids["deye_battery_power"])),
+            deye_battery_voltage_v=parse_float_state(self.get_state(self.entity_ids["deye_battery_voltage"])),
+        )
+        decision = self.charge_controller.evaluate(telemetry, enabled=True)
+        live_maximum = self._deye_current_entity_maximum_a()
+        if live_maximum is not None and decision.recommended_current_a > live_maximum:
+            decision = replace(
+                decision,
+                recommended_current_a=live_maximum,
+                reason=f"{decision.reason}; clamped to live entity maximum {live_maximum:g} A",
+            )
+        self._set_helper("energy_v2_charge_shadow_state", decision.state.value)
+        self._set_helper("energy_v2_charge_recommended_state", decision.state.value)
+        self._set_helper("energy_v2_recommended_deye_charge_current_a", f"{decision.recommended_current_a:.0f}")
+        self._set_helper("energy_v2_charge_decision_reason", decision.reason)
+        self._set_helper("energy_v2_charge_block_reason", decision.block_reason)
+        self._set_helper(
+            "energy_v2_charge_shadow_summary",
+            f"{decision.state.value}: recommend {decision.recommended_current_a:.0f} A; {decision.reason}",
+        )
+        self._set_helper("energy_v2_solax_discharge_average_w", f"{decision.average_solax_discharge_w or 0:.1f}")
+        self._set_helper("energy_v2_deye_charge_average_w", f"{decision.average_deye_charge_w or 0:.1f}")
+        self._set_helper("energy_v2_deye_voltage_average_v", f"{decision.average_deye_voltage_v or 0:.1f}")
+        self._set_helper("energy_v2_calculated_safe_charge_power_w", f"{max(decision.safe_power_w or 0, 0):.1f}")
+        self._set_helper("energy_v2_calculated_safe_current_a", f"{max(decision.calculated_current_a or 0, 0):.1f}")
+        mismatch = self._charge_mode_mismatches(decision.recommended_current_a)
+        self._set_helper("energy_v2_charge_mode_mismatches", mismatch)
+        if mismatch and mismatch != self._charge_last_mismatch:
+            self._charge_conflict_times.append(now)
+        self._charge_last_mismatch = mismatch
+        while self._charge_conflict_times and (now - self._charge_conflict_times[0]).total_seconds() > 60:
+            self._charge_conflict_times.popleft()
+        self._set_helper("energy_v2_charge_conflict_count", str(len(self._charge_conflict_times)))
+        if not mismatch:
+            state = "MATCHED"
+        elif len(self._charge_conflict_times) >= self.charge_controller_parameters.conflict_attempt_limit:
+            state = "WOULD_ENTER_FAULT"
+        else:
+            state = "WOULD_CORRECT"
+        self._set_helper("energy_v2_charge_conflict_state", state)
+        self._set_helper("energy_v2_charge_conflict_summary", f"{state}: {mismatch or 'all readable modes match'}")
+        elapsed = self.charge_controller._elapsed(now)
+        timer_key = {
+            "START_CONFIRMATION": "energy_v2_charge_start_confirmation_s",
+            "TRANSFER_CONFIRMATION": "energy_v2_charge_transfer_confirmation_s",
+            "RETURN_CONFIRMATION": "energy_v2_charge_return_confirmation_s",
+            "FAULT": "energy_v2_charge_fault_recovery_s",
+        }.get(decision.state.value)
+        for key in (
+            "energy_v2_charge_start_confirmation_s",
+            "energy_v2_charge_transfer_confirmation_s",
+            "energy_v2_charge_return_confirmation_s",
+            "energy_v2_charge_fault_recovery_s",
+        ):
+            self._set_helper(key, f"{elapsed if key == timer_key else 0:.0f}")
+
+    def _charge_mode_mismatches(self, current_a: float) -> str:
+        expected = {
+            "solax_charger_use_mode": "Self Use Mode",
+            "deye_ac_coupling": "Grid",
+            "deye_export_surplus": "off",
+            "deye_time_of_use": "Disabled",
+            "deye_work_mode": "Zero Export To CT",
+        }
+        mismatches: list[str] = []
+        for key, wanted in expected.items():
+            actual = parse_text_state(self.get_state(self.entity_ids[key]))
+            if actual is None:
+                mismatches.append(f"{key}=UNAVAILABLE")
+            elif actual != wanted:
+                mismatches.append(f"{key}={actual!r}, wants {wanted!r}")
+        actual_current = parse_float_state(self.get_state(self.entity_ids["deye_charge_current"]))
+        if actual_current is None:
+            mismatches.append("deye_charge_current=UNAVAILABLE")
+        elif round(actual_current) != round(current_a):
+            mismatches.append(f"deye_charge_current={actual_current:.0f}A, wants {current_a:.0f}A")
+        return "; ".join(mismatches)[:255]
 
     def _evaluate_flow_monitoring(
         self,
@@ -343,12 +462,20 @@ class EnergyV2App(hass.Hass):
             self.call_service("input_text/set_value", entity_id=entity_id, value=value[:255])
         elif domain == "input_datetime":
             self.call_service("input_datetime/set_datetime", entity_id=entity_id, datetime=value)
-        elif domain == "input_number" and key in {
-            "energy_v2_instant_grid_export_w",
-            "energy_v2_rolling_15min_export_w",
-            "energy_v2_export_window_covered_s",
-            "energy_v2_export_sample_age_s",
-        }:
+        elif domain == "input_number" and (
+            key
+            in {
+                "energy_v2_instant_grid_export_w",
+                "energy_v2_rolling_15min_export_w",
+                "energy_v2_export_window_covered_s",
+                "energy_v2_export_sample_age_s",
+            }
+            or key.startswith("energy_v2_charge_")
+            or key.startswith("energy_v2_solax_")
+            or key.startswith("energy_v2_deye_")
+            or key.startswith("energy_v2_calculated_")
+            or key == "energy_v2_recommended_deye_charge_current_a"
+        ):
             self.call_service("input_number/set_value", entity_id=entity_id, value=float(value))
         elif domain == "input_boolean" and key == "energy_v2_safe_to_enable":
             service = "input_boolean/turn_on" if value == "on" else "input_boolean/turn_off"
@@ -366,6 +493,21 @@ class EnergyV2App(hass.Hass):
         except ValueError:
             self._warning("unknown strategy %r; keeping phase 2 passive", value)
             return Strategy.SERVICE
+
+    def _charge_controller_parameters_from_args(self) -> ChargeControllerParameters:
+        parameters, errors = parse_charge_shadow_config(self.args)
+        self._config_errors = (*self._config_errors, *errors)
+        return parameters
+
+    def _deye_current_entity_maximum_a(self) -> float | None:
+        state = self.get_state(self.entity_ids["deye_charge_current"], attribute="all")
+        if not isinstance(state, dict):
+            return None
+        attributes = state.get("attributes")
+        if not isinstance(attributes, dict):
+            return None
+        maximum = parse_float_state(attributes.get("max"))
+        return maximum if maximum is not None and maximum >= 0 else None
 
     def _publish_flow_diagnostics(self, snapshot: FlowSnapshot, assessment: FlowAssessment) -> None:
         self._set_helper("energy_v2_flow_state", assessment.state.value)

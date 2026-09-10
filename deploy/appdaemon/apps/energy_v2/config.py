@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
+from .charge_controller import ChargeControllerParameters, validate_charge_controller_parameters
+
 ENTITY_IDS: dict[str, str] = {
     "solax_soc": "sensor.solax_battery_capacity",
     "solax_battery_power": "sensor.solax_battery_power_charge",
@@ -14,6 +18,7 @@ ENTITY_IDS: dict[str, str] = {
     "deye_soc": "sensor.deye_battery",
     "deye_battery_power": "sensor.battery_power_otoceny",
     "deye_battery_power_raw": "sensor.deye_battery_power",
+    "deye_battery_voltage": "sensor.deye_battery_voltage",
     "deye_battery_state": "sensor.deye_battery_state",
     "deye_grid_power": "sensor.deye_grid_power",
     "deye_external_power": "sensor.deye_external_power",
@@ -24,6 +29,11 @@ ENTITY_IDS: dict[str, str] = {
     "future_sell_rank": "sensor.energy_trading_budouci_poradi_prodejni_ceny",
     "deye_grid_charging": "switch.deye_battery_grid_charging",
     "deye_export_surplus": "switch.deye_export_surplus",
+    "deye_charge_current": "number.deye_battery_max_charging_current",
+    "solax_charger_use_mode": "select.solax_charger_use_mode",
+    "deye_ac_coupling": "select.deye_ac_coupling",
+    "deye_time_of_use": "select.deye_time_of_use",
+    "deye_work_mode": "select.deye_work_mode",
     "legacy_enabled": "input_boolean.energy_trading_puvodni_reseni_povoleno",
     "current_energy_trading_enabled": "input_boolean.energy_trading_novy_system_povolen",
     "energy_v2_enabled": "input_boolean.energy_v2_enabled",
@@ -56,6 +66,26 @@ ENTITY_IDS: dict[str, str] = {
     "energy_v2_app_status": "input_select.energy_v2_app_status",
     "energy_v2_deye_fv_ledger": "input_number.energy_v2_deye_fv_ledger",
     "energy_v2_solax_fv_ledger": "input_number.energy_v2_solax_fv_ledger",
+    "energy_v2_charge_shadow_enabled": "input_boolean.energy_v2_charge_shadow_enabled",
+    "energy_v2_charge_shadow_state": "input_select.energy_v2_charge_shadow_state",
+    "energy_v2_charge_recommended_state": "input_select.energy_v2_charge_recommended_state",
+    "energy_v2_recommended_deye_charge_current_a": "input_number.energy_v2_recommended_deye_charge_current_a",
+    "energy_v2_charge_start_confirmation_s": "input_number.energy_v2_charge_start_confirmation_s",
+    "energy_v2_charge_transfer_confirmation_s": "input_number.energy_v2_charge_transfer_confirmation_s",
+    "energy_v2_charge_return_confirmation_s": "input_number.energy_v2_charge_return_confirmation_s",
+    "energy_v2_charge_fault_recovery_s": "input_number.energy_v2_charge_fault_recovery_s",
+    "energy_v2_solax_discharge_average_w": "input_number.energy_v2_solax_discharge_average_w",
+    "energy_v2_deye_charge_average_w": "input_number.energy_v2_deye_charge_average_w",
+    "energy_v2_deye_voltage_average_v": "input_number.energy_v2_deye_voltage_average_v",
+    "energy_v2_calculated_safe_charge_power_w": "input_number.energy_v2_calculated_safe_charge_power_w",
+    "energy_v2_calculated_safe_current_a": "input_number.energy_v2_calculated_safe_current_a",
+    "energy_v2_charge_conflict_count": "input_number.energy_v2_charge_conflict_count",
+    "energy_v2_charge_conflict_state": "input_select.energy_v2_charge_conflict_state",
+    "energy_v2_charge_decision_reason": "input_text.energy_v2_charge_decision_reason",
+    "energy_v2_charge_block_reason": "input_text.energy_v2_charge_block_reason",
+    "energy_v2_charge_mode_mismatches": "input_text.energy_v2_charge_mode_mismatches",
+    "energy_v2_charge_shadow_summary": "input_text.energy_v2_charge_shadow_summary",
+    "energy_v2_charge_conflict_summary": "input_text.energy_v2_charge_conflict_summary",
 }
 
 REQUIRED_TELEMETRY_KEYS: tuple[str, ...] = (
@@ -85,6 +115,7 @@ OPTIONAL_TELEMETRY_KEYS: tuple[str, ...] = (
     "solax_measured_power_l2",
     "solax_measured_power_l3",
     "deye_battery_power_raw",
+    "deye_battery_voltage",
 )
 
 ENERGY_V2_HELPER_KEYS: tuple[str, ...] = (
@@ -118,6 +149,26 @@ ENERGY_V2_HELPER_KEYS: tuple[str, ...] = (
     "energy_v2_app_status",
     "energy_v2_deye_fv_ledger",
     "energy_v2_solax_fv_ledger",
+    "energy_v2_charge_shadow_enabled",
+    "energy_v2_charge_shadow_state",
+    "energy_v2_charge_recommended_state",
+    "energy_v2_recommended_deye_charge_current_a",
+    "energy_v2_charge_start_confirmation_s",
+    "energy_v2_charge_transfer_confirmation_s",
+    "energy_v2_charge_return_confirmation_s",
+    "energy_v2_charge_fault_recovery_s",
+    "energy_v2_solax_discharge_average_w",
+    "energy_v2_deye_charge_average_w",
+    "energy_v2_deye_voltage_average_v",
+    "energy_v2_calculated_safe_charge_power_w",
+    "energy_v2_calculated_safe_current_a",
+    "energy_v2_charge_conflict_count",
+    "energy_v2_charge_conflict_state",
+    "energy_v2_charge_decision_reason",
+    "energy_v2_charge_block_reason",
+    "energy_v2_charge_mode_mismatches",
+    "energy_v2_charge_shadow_summary",
+    "energy_v2_charge_conflict_summary",
 )
 
 LEGACY_MASTER_HELPER_KEYS: tuple[str, ...] = (
@@ -155,3 +206,29 @@ DEFAULT_CONFLICTING_AUTOMATIONS: tuple[str, ...] = (
     "automation.vypne_vybijeni_deye_a_zapne_self_use_mod_na_solaxu",
     "automation.zpnout_nabijeni_deye_v_ucity_cas",
 )
+
+
+def parse_charge_shadow_config(
+    appdaemon_args: Any,
+) -> tuple[ChargeControllerParameters, tuple[str, ...]]:
+    """Build a validated, fail-safe charge-shadow model from AppDaemon args."""
+    defaults = ChargeControllerParameters()
+    if not isinstance(appdaemon_args, dict):
+        return defaults, ("AppDaemon args must be a mapping",)
+    if "charge_shadow" not in appdaemon_args:
+        return defaults, ("missing required charge_shadow mapping",)
+    source = appdaemon_args.get("charge_shadow")
+    if not isinstance(source, dict):
+        return defaults, ("charge_shadow must be a mapping",)
+    values: dict[str, object] = {}
+    errors: list[str] = []
+    for name in ChargeControllerParameters.__dataclass_fields__:
+        raw = source.get(name, getattr(defaults, name))
+        try:
+            values[name] = int(raw) if name == "conflict_attempt_limit" else float(raw)
+        except (TypeError, ValueError):
+            errors.append(f"invalid charge_shadow.{name}")
+            values[name] = getattr(defaults, name)
+    parameters = ChargeControllerParameters(**values)  # type: ignore[arg-type]
+    errors.extend(f"charge_shadow.{error}" for error in validate_charge_controller_parameters(parameters))
+    return parameters, tuple(errors)
