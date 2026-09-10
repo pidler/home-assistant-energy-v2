@@ -26,7 +26,7 @@ jobs:
       - name: Install quality tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest ruff
+          python -m pip install pytest ruff pyyaml
 
       - name: Python syntax check
         run: python -m compileall apps tests scripts
@@ -42,6 +42,9 @@ jobs:
 
       - name: Verify Home Assistant helper package
         run: python scripts/verify_homeassistant_package.py
+
+      - name: Verify Lovelace dashboard
+        run: python scripts/verify_dashboard.py
 
       - name: Unit and stubbed AppDaemon import tests
         run: pytest

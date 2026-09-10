@@ -1,0 +1,493 @@
+title: ENERGY V2
+views:
+  - title: Přehled
+    path: prehled
+    icon: mdi:view-dashboard
+    cards:
+      - type: markdown
+        title: Stav ENERGY V2
+        content: |
+          ## ENERGY V2 Phase 2
+
+          **App:** `{{ states('input_select.energy_v2_app_status') }}`
+
+          **Shadow mode:** `{{ states('input_boolean.energy_v2_shadow_mode') }}`
+
+          **ENERGY V2 enabled:** `{{ states('input_boolean.energy_v2_enabled') }}`
+
+          **Physical control:** `DISABLED`
+
+          **Safe to enable:** `{{ states('input_boolean.energy_v2_safe_to_enable') }}`
+
+          **Strategy:** `{{ states('input_select.energy_v2_strategy') }}`
+
+          **Requested mode:** `{{ states('input_select.energy_v2_requested_mode') }}`
+
+          **Actual mode:** `{{ states('input_select.energy_v2_actual_mode') }}`
+
+          Phase 2 je pouze pasivní monitoring. Dashboard nic fyzicky neovládá.
+
+      - type: markdown
+        title: Blokace aktivace
+        content: |
+          **Safe to enable:** `{{ states('input_boolean.energy_v2_safe_to_enable') }}`
+
+          **Legacy systém:** `{{ states('input_boolean.energy_trading_puvodni_reseni_povoleno') }}`
+
+          **Aktuální energy_trading nový systém:** `{{ states('input_boolean.energy_trading_novy_system_povolen') }}`
+
+          **Aktivní / chybějící konflikty:**
+
+          `{{ states('input_text.energy_v2_active_conflicts') }}`
+
+          **Poslední chyba vyhodnocení:**
+
+          `{{ states('input_text.energy_v2_last_evaluation_error') }}`
+
+      - type: markdown
+        title: Poslední shadow rozhodnutí
+        content: |
+          `{{ states('input_text.energy_v2_last_decision') }}`
+
+      - type: grid
+        title: Exportní limit
+        columns: 2
+        square: false
+        cards:
+          - type: gauge
+            name: Okamžitý export
+            entity: input_number.energy_v2_instant_grid_export_w
+            min: 0
+            max: 12000
+            severity:
+              green: 0
+              yellow: 9800
+              red: 10000
+          - type: gauge
+            name: 15min průměr exportu
+            entity: input_number.energy_v2_rolling_15min_export_w
+            min: 0
+            max: 12000
+            severity:
+              green: 0
+              yellow: 9800
+              red: 10000
+
+      - type: markdown
+        title: Detail exportního limitu
+        content: |
+          **Stav:** `{{ states('input_select.energy_v2_export_limit_state') }}`
+
+          **Okamžitý export:** `{{ states('input_number.energy_v2_instant_grid_export_w') }} W`
+
+          **15min časově vážený průměr:** `{{ states('input_number.energy_v2_rolling_15min_export_w') }} W`
+
+          **Pokrytí okna:** `{{ states('input_number.energy_v2_export_window_covered_s') }} / 900 s`
+
+          **Stáří posledního exportního vzorku:** `{{ states('input_number.energy_v2_export_sample_age_s') }} s`
+
+          **Poslední validní exportní vzorek:** `{{ states('input_datetime.energy_v2_last_valid_export_sample') }}`
+
+          **Provozní cíl ENERGY V2:** `9 800 W`
+
+          **Povolený 15min průměr:** `10 000 W`
+
+          **Souhrn:** `{{ states('input_text.energy_v2_export_limit_summary') }}`
+
+          Krátkodobé překročení 9 800 W nebo 10 000 W je warning. Skutečné porušení je pouze
+          **15min časově vážený průměr > 10 000 W**.
+
+      - type: entities
+        title: SolaX
+        show_header_toggle: false
+        entities:
+          - entity: sensor.solax_battery_capacity
+            name: SOC baterie
+          - entity: sensor.solax_battery_power_charge
+            name: Výkon baterie
+          - entity: sensor.solax_pv_power_total
+            name: FV výkon
+          - entity: sensor.solax_house_load
+            name: Spotřeba domu
+          - entity: sensor.solax_measured_power
+            name: Hlavní měření přípojky (+ export / − import)
+
+      - type: markdown
+        title: Směr toku SolaX baterie
+        content: |
+          `sensor.solax_battery_power_charge`
+
+          * `+` = nabíjení
+          * `−` = vybíjení
+
+          Aktuální hodnota: `{{ states('sensor.solax_battery_power_charge') }} W`
+
+      - type: entities
+        title: DEYE
+        show_header_toggle: false
+        entities:
+          - entity: sensor.deye_battery
+            name: SOC baterie
+          - entity: sensor.battery_power_otoceny
+            name: Výkon baterie normalizovaný
+          - entity: sensor.deye_battery_state
+            name: Stav baterie
+          - entity: sensor.deye_grid_power
+            name: Grid power
+          - entity: sensor.deye_external_power
+            name: External power
+          - entity: sensor.deye_device_state
+            name: Device state
+          - entity: binary_sensor.deye_connection
+            name: Připojení
+
+      - type: markdown
+        title: Stav DEYE aktuátorů pouze informativně
+        content: |
+          **Grid charging:** `{{ states('switch.deye_battery_grid_charging') }}`
+
+          **Export surplus:** `{{ states('switch.deye_export_surplus') }}`
+
+          Tyto entity nejsou na dashboardu ovladatelné.
+
+      - type: markdown
+        title: Aktuální energetické toky
+        content: |
+          **FV výkon:** `{{ states('sensor.solax_pv_power_total') }} W`
+
+          **Spotřeba domu:** `{{ states('sensor.solax_house_load') }} W`
+
+          **SolaX baterie:** `{{ states('sensor.solax_battery_power_charge') }} W`
+
+          **DEYE baterie:** `{{ states('sensor.battery_power_otoceny') }} W`
+
+          **Hlavní měření přípojky:** `{{ states('sensor.solax_measured_power') }} W`
+
+          **Export do sítě:** `{{ states('input_number.energy_v2_instant_grid_export_w') }} W`
+
+          Hlavní měření přípojky: `+` = export, `−` = import. Baterie: `+` = nabíjení, `−` = vybíjení.
+
+      - type: markdown
+        title: Phase 2 flow monitoring
+        content: |
+          **Flow state:** `{{ states('input_select.energy_v2_flow_state') }}`
+
+          **Souhrn:** `{{ states('input_text.energy_v2_flow_summary') }}`
+
+          **Warning:** `{{ states('input_text.energy_v2_flow_warning') }}`
+
+          **Violation:** `{{ states('input_text.energy_v2_flow_violation') }}`
+
+          **Poslední violation:** `{{ states('input_datetime.energy_v2_last_flow_violation') }}`
+
+      - type: markdown
+        title: SOC a odhad energie nad minimální rezervou
+        content: |
+          {% set solax_soc = states('sensor.solax_battery_capacity') | float(0) %}
+          {% set deye_soc = states('sensor.deye_battery') | float(0) %}
+          {% set solax_available = 24 * ([solax_soc - 10, 0] | max) / 100 %}
+          {% set deye_available = 32 * ([deye_soc - 10, 0] | max) / 100 %}
+          {% set total_available = solax_available + deye_available %}
+
+          ### SolaX
+
+          Kapacita: `24 kWh`
+
+          SOC: `{{ solax_soc | round(1) }} %`
+
+          Minimum SOC: `10 %`
+
+          Odhad energie nad minimální rezervou: `{{ solax_available | round(2) }} kWh`
+
+          ### DEYE
+
+          Kapacita: `32 kWh`
+
+          SOC: `{{ deye_soc | round(1) }} %`
+
+          Minimum SOC: `10 %`
+
+          Odhad energie nad minimální rezervou: `{{ deye_available | round(2) }} kWh`
+
+          ### Celkem
+
+          Odhad energie nad minimální rezervou: `{{ total_available | round(2) }} kWh`
+
+          Tento údaj není ledger původu energie.
+
+      - type: markdown
+        title: Ekonomika
+        content: |
+          **Aktuální nákupní cena:** `{{ states('sensor.current_buy_electricity_price_15min') }}`
+
+          **Aktuální prodejní cena:** `{{ states('sensor.current_sell_electricity_price_15min') }}`
+
+          **Budoucí pořadí prodejní ceny:** `{{ states('sensor.energy_trading_budouci_poradi_prodejni_ceny') }}`
+
+          **Poslední planner decision:** `{{ states('input_text.energy_v2_last_decision') }}`
+
+  - title: Diagnostika
+    path: diagnostika
+    icon: mdi:stethoscope
+    cards:
+      - type: entities
+        title: Raw telemetrie SolaX
+        show_header_toggle: false
+        entities:
+          - sensor.solax_battery_capacity
+          - sensor.solax_battery_power_charge
+          - sensor.solax_pv_power_total
+          - sensor.solax_house_load
+          - sensor.solax_measured_power
+          - sensor.solax_grid_import
+          - sensor.solax_grid_export
+
+      - type: entities
+        title: Raw telemetrie DEYE
+        show_header_toggle: false
+        entities:
+          - sensor.deye_battery
+          - sensor.battery_power_otoceny
+          - sensor.deye_battery_power
+          - sensor.deye_battery_state
+          - sensor.deye_grid_power
+          - sensor.deye_external_power
+          - sensor.deye_device_state
+          - binary_sensor.deye_connection
+
+      - type: history-graph
+        title: DEYE aktuátory pouze historie
+        hours_to_show: 6
+        entities:
+          - switch.deye_battery_grid_charging
+          - switch.deye_export_surplus
+
+      - type: entities
+        title: Ceny
+        show_header_toggle: false
+        entities:
+          - sensor.current_buy_electricity_price_15min
+          - sensor.current_sell_electricity_price_15min
+          - sensor.energy_trading_budouci_poradi_prodejni_ceny
+
+      - type: markdown
+        title: Znaménkové konvence k ověření
+        content: |
+          **SolaX battery power**
+
+          `+` = nabíjení
+
+          `−` = vybíjení
+
+          **DEYE battery power normalizovaný**
+
+          `sensor.battery_power_otoceny`
+
+          `+` = nabíjení
+
+          `−` = vybíjení
+
+          **DEYE raw battery power**
+
+          `sensor.deye_battery_power`
+
+          `+` = vybíjení
+
+          `−` = nabíjení
+
+          **Hlavní měření přípojky**
+
+          `sensor.solax_measured_power`
+
+          `+` = export
+
+          `−` = import
+
+          **Kontrolní DEYE grid power**
+
+          `+` = import
+
+          `−` = export
+
+          Hlavní referencí celé přípojky je uživatelsky potvrzený `sensor.solax_measured_power`.
+
+      - type: history-graph
+        title: Hlavní měření přípojky a fáze - poslední hodina
+        hours_to_show: 1
+        entities:
+          - sensor.solax_measured_power
+          - sensor.solax_measured_power_l1
+          - sensor.solax_measured_power_l2
+          - sensor.solax_measured_power_l3
+
+      - type: history-graph
+        title: Porovnání síťových měření - poslední hodina
+        hours_to_show: 1
+        entities:
+          - sensor.solax_measured_power
+          - sensor.deye_grid_power
+          - sensor.deye_external_power
+          - sensor.solax_grid_import
+          - sensor.solax_grid_export
+          - input_number.energy_v2_instant_grid_export_w
+
+      - type: history-graph
+        title: Porovnání síťových měření - posledních 6 hodin
+        hours_to_show: 6
+        entities:
+          - sensor.solax_measured_power
+          - sensor.deye_grid_power
+          - sensor.deye_external_power
+          - sensor.solax_grid_import
+          - sensor.solax_grid_export
+          - input_number.energy_v2_instant_grid_export_w
+
+      - type: markdown
+        title: Flow diagnostika
+        content: |
+          **Flow state:** `{{ states('input_select.energy_v2_flow_state') }}`
+
+          **Souhrn:** `{{ states('input_text.energy_v2_flow_summary') }}`
+
+          **Warning:** `{{ states('input_text.energy_v2_flow_warning') }}`
+
+          **Violation:** `{{ states('input_text.energy_v2_flow_violation') }}`
+
+          **Poslední violation:** `{{ states('input_datetime.energy_v2_last_flow_violation') }}`
+
+      - type: markdown
+        title: Export average diagnostika
+        content: |
+          **Okamžitý export:** `{{ states('input_number.energy_v2_instant_grid_export_w') }} W`
+
+          **Rolling average:** `{{ states('input_number.energy_v2_rolling_15min_export_w') }} W`
+
+          **Covered duration:** `{{ states('input_number.energy_v2_export_window_covered_s') }} s`
+
+          **Sample age:** `{{ states('input_number.energy_v2_export_sample_age_s') }} s`
+
+          **Last valid sample:** `{{ states('input_datetime.energy_v2_last_valid_export_sample') }}`
+
+          **Window complete/incomplete:** `{{ states('input_number.energy_v2_export_window_covered_s') | float(0) >= 900 }}`
+
+          **Stale telemetrie:** uvedeno ve stavu `UNKNOWN` nebo v souhrnu.
+
+          **Export limit state:** `{{ states('input_select.energy_v2_export_limit_state') }}`
+
+          **Souhrn:** `{{ states('input_text.energy_v2_export_limit_summary') }}`
+
+          **Poslední average violation:** `{{ states('input_datetime.energy_v2_last_export_average_violation') }}`
+
+      - type: history-graph
+        title: Export okamžitě vs 15min průměr
+        hours_to_show: 6
+        entities:
+          - input_number.energy_v2_instant_grid_export_w
+          - input_number.energy_v2_rolling_15min_export_w
+
+      - type: markdown
+        title: Runtime diagnostika
+        content: |
+          **Heartbeat:** `{{ states('input_datetime.energy_v2_heartbeat') }}`
+
+          **Last successful evaluation:** `{{ states('input_datetime.energy_v2_last_successful_evaluation') }}`
+
+          **App status:** `{{ states('input_select.energy_v2_app_status') }}`
+
+          **Last evaluation error:** `{{ states('input_text.energy_v2_last_evaluation_error') }}`
+
+          **Requested mode:** `{{ states('input_select.energy_v2_requested_mode') }}`
+
+          **Actual mode:** `{{ states('input_select.energy_v2_actual_mode') }}`
+
+          **Safe to enable:** `{{ states('input_boolean.energy_v2_safe_to_enable') }}`
+
+          **DEYE connection:** `{{ states('binary_sensor.deye_connection') }}`
+
+  - title: Nastavení
+    path: nastaveni
+    icon: mdi:cog-outline
+    cards:
+      - type: markdown
+        title: Systémové parametry
+        content: |
+          ### SolaX
+
+          Rated power: `12 000 W`
+
+          Battery capacity: `24 kWh`
+
+          Minimum SOC: `10 %`
+
+          ### DEYE
+
+          Rated power: `12 000 W`
+
+          Battery capacity: `32 kWh`
+
+          Minimum SOC: `10 %`
+
+          ### Distribuční síť
+
+          Operational export target ENERGY V2: `9 800 W`
+
+          Legal 15min average limit: `10 000 W`
+
+          Export averaging window: `900 s`
+
+          Hodnoty odpovídají `SystemParameters` v AppDaemon aplikaci.
+
+      - type: markdown
+        title: Flow thresholdy
+        content: |
+          Hodnoty pochází z AppDaemon konfigurace / defaultů.
+
+          * grid import warning: `200 W`
+          * grid import violation: `500 W`
+          * battery flow warning: `300 W`
+          * battery flow violation: `500 W`
+          * minimum DEYE charge: `300 W`
+          * minimum export: `300 W`
+          * warning persistence: `5 s`
+          * violation persistence: `10 s`
+          * flow tick interval: `5 s`
+          * export telemetry stale timeout: `30 s`
+
+      - type: markdown
+        title: Strategie
+        content: |
+          **Aktuální strategie:** `{{ states('input_select.energy_v2_strategy') }}`
+
+          Implementováno ve Phase 2:
+
+          * `SUMMER_NO_GRID_CHARGE`
+
+          Neimplementováno:
+
+          * `WINTER_GRID_OPTIMIZATION`
+          * `SERVICE`
+
+          Strategie zde není ovladatelná.
+
+      - type: markdown
+        title: Bezpečnostní invarianty
+        content: |
+          * Legacy systém a ENERGY V2 nesmí být aktivní současně.
+          * Phase 2 je pouze pasivní.
+          * Grid Charge není implementován.
+          * Aktivní PV Charge není implementován.
+          * Aktivní export není implementován.
+          * ENERGY V2 nesmí záměrně požadovat agregovaný export nad `9 800 W`.
+          * Skutečný distribuční limit je `10 000 W` jako 15min průměr.
+          * Historický původ energie v baterii se v letní strategii nesleduje.
+
+      - type: markdown
+        title: Administrátorské helpery pouze stavově
+        content: |
+          **energy_v2_enabled:** `{{ states('input_boolean.energy_v2_enabled') }}`
+
+          **energy_v2_export_enabled:** `{{ states('input_boolean.energy_v2_export_enabled') }}`
+
+          **energy_v2_service_mode:** `{{ states('input_boolean.energy_v2_service_mode') }}`
+
+          Physical control remains disabled in Phase 2.

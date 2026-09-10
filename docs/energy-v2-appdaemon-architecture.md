@@ -1,27 +1,27 @@
-# Energy V2 - AppDaemon architecture for passive phase 1
+# Energy V2 - AppDaemon architecture
 
 Date: 2026-07-26.
 
-This document describes the local, not-yet-deployed AppDaemon application `energy_v2`.
-Phase 1 is strictly passive: shadow evaluation, safety validation, and diagnostics only.
-It does not physically control SolaX or DEYE.
+This document describes the AppDaemon application `energy_v2`.
+Phase 1 was passively deployed and validated. Phase 2 keeps the same shadow-only safety boundary
+and adds summer flow monitoring diagnostics.
 
 ## Current AppDaemon status
 
-Observed through Home Assistant MCP during the initial audit:
+Phase 1 status after PR #1:
 
-- AppDaemon add-on appears installed via `update.appdaemon_aktualizovat`.
-- Add-on version reported by that entity: `0.18.5`.
-- Production AppDaemon filesystem, add-on logs, and runtime Python version were not available through MCP.
+- passive AppDaemon deployment was completed,
+- the application loaded successfully,
+- production telemetry was valid,
+- no physical inverter control was implemented,
+- `safe_to_enable` remained blocked by the legacy system and a conflicting automation.
 
-Not verified:
+Phase 2 status in this branch:
 
-- actual AppDaemon process load of `energy_v2`,
-- production AppDaemon import path,
-- production AppDaemon logs,
-- deployment into `/config/apps` or add-on config directories.
-
-No Home Assistant add-on service was called and no production deployment was performed.
+- local code only,
+- not deployed to production,
+- not loaded by production AppDaemon,
+- intended next step is code review and then passive AppDaemon deployment.
 
 ## Files
 
@@ -31,6 +31,7 @@ No Home Assistant add-on service was called and no production deployment was per
 | `apps/energy_v2/models.py` | dataclasses and enums |
 | `apps/energy_v2/config.py` | entity map, required/optional groups, owned actuator inventory |
 | `apps/energy_v2/telemetry.py` | state parsing and telemetry snapshot |
+| `apps/energy_v2/flow.py` | sign conventions, flow snapshot, flow classification, debounce |
 | `apps/energy_v2/safety.py` | pure validation helpers |
 | `apps/energy_v2/planner.py` | pure shadow planner |
 | `apps/energy_v2/diagnostics.py` | diagnostic formatting |
@@ -54,8 +55,11 @@ Actual production loading by a running AppDaemon instance is still not verified.
 
 Required telemetry:
 
-- SolaX SOC, battery power, PV power, house load, grid import, grid export
-- DEYE SOC, battery power, battery state, grid power, external power, device state, connection
+- SolaX SOC, battery power, PV power, house load, measured whole-connection grid power, grid
+  import, grid export
+- optional SolaX measured L1/L2/L3 phase power for diagnostics
+- DEYE SOC, normalized battery power, raw battery power for diagnostics, battery state, grid power,
+  external power, device state, connection
 - buy price, sell price
 - DEYE grid charging switch state
 - DEYE export switch state
@@ -63,6 +67,10 @@ Required telemetry:
 Optional telemetry:
 
 - `future_sell_rank`
+- `sensor.solax_measured_power_l1`
+- `sensor.solax_measured_power_l2`
+- `sensor.solax_measured_power_l3`
+- raw `sensor.deye_battery_power`
 
 Required helpers:
 
@@ -71,9 +79,21 @@ Required helpers:
 - `input_boolean.energy_v2_export_enabled`
 - `input_boolean.energy_v2_service_mode`
 - `input_boolean.energy_v2_safe_to_enable`
+- `input_select.energy_v2_strategy`
 - `input_select.energy_v2_requested_mode`
 - `input_select.energy_v2_actual_mode`
 - `input_select.energy_v2_app_status`
+- `input_select.energy_v2_flow_state`
+- `input_text.energy_v2_flow_summary`
+- `input_text.energy_v2_flow_warning`
+- `input_text.energy_v2_flow_violation`
+- `input_datetime.energy_v2_last_flow_violation`
+- `input_number.energy_v2_instant_grid_export_w`
+- `input_number.energy_v2_rolling_15min_export_w`
+- `input_number.energy_v2_export_window_covered_s`
+- `input_select.energy_v2_export_limit_state`
+- `input_text.energy_v2_export_limit_summary`
+- `input_datetime.energy_v2_last_export_average_violation`
 - `input_text.energy_v2_last_fault`
 - `input_text.energy_v2_last_decision`
 - `input_text.energy_v2_active_conflicts`
@@ -112,6 +132,21 @@ Diagnostics written by the app:
 - `input_text.energy_v2_last_fault`: last enable rejection
 - `input_text.energy_v2_last_decision`: last diagnostic decision text
 - `input_text.energy_v2_active_conflicts`: active or missing conflict diagnostics plus optional missing items
+- `input_select.energy_v2_strategy`: selected operational strategy
+- `input_select.energy_v2_flow_state`: current passive flow classification
+- `input_text.energy_v2_flow_summary`: compact current flow snapshot
+- `input_text.energy_v2_flow_warning`: persistent or transient flow warnings
+- `input_text.energy_v2_flow_violation`: persistent flow violations
+- `input_datetime.energy_v2_last_flow_violation`: last time a persistent flow violation was seen
+- `input_number.energy_v2_instant_grid_export_w`: current aggregate grid export sample
+- `input_number.energy_v2_rolling_15min_export_w`: time-weighted rolling export average
+- `input_number.energy_v2_export_window_covered_s`: available rolling-window history
+- `input_number.energy_v2_export_sample_age_s`: age of the last valid export sample
+- `input_select.energy_v2_export_limit_state`: export-limit classification
+- `input_text.energy_v2_export_limit_summary`: compact export-limit diagnostics
+- `input_datetime.energy_v2_last_export_average_violation`: last time the 15-minute average exceeded
+  the permitted average
+- `input_datetime.energy_v2_last_valid_export_sample`: last successful export sample timestamp
 
 If `input_boolean.energy_v2_shadow_mode` is `off`:
 
@@ -131,7 +166,8 @@ Telemetry validation rejects:
 - `future_sell_rank < 1` when that optional entity is available,
 - DEYE disconnected or device state other than `Normal`.
 
-Negative power values remain valid because SolaX and DEYE use different sign conventions.
+Negative power values remain valid. Internal battery convention is unified as positive charging
+and negative discharging for SolaX and normalized DEYE power.
 
 Safe enable additionally blocks:
 
@@ -164,8 +200,48 @@ It does not disable legacy automations automatically.
 
 The recommendation is diagnostic only. `actual_mode` remains `DISABLED`.
 
-Grid Charge is intentionally absent from phase 1.
+In phase 2 the planner also receives the current flow state, warning flag, and violation flag.
+An active flow violation makes the shadow recommendation `FAULT`; with Energy V2 disabled,
+`requested_mode` and `actual_mode` remain `DISABLED`.
+
+Grid Charge is intentionally absent.
 Ledger helpers are read only; no ledger calculation or mutation is implemented.
+
+## Summer flow monitoring
+
+Phase 2 implements `SUMMER_NO_GRID_CHARGE` diagnostics. It does not track historical battery
+energy origin. It evaluates only current telemetry and classifies physical flows as described in
+`docs/phase-2-summer-flow-monitoring.md`.
+
+It also monitors aggregate export against the confirmed system parameters:
+
+- both inverters are 12 kW,
+- SolaX battery capacity is 24 kWh,
+- DEYE battery capacity is 32 kWh,
+- both confirmed minimum SOC values are 10%,
+- permitted export is 10,000 W as a 15-minute average,
+- ENERGY V2 operational export target is 9,800 W.
+
+The primary grid authority is `sensor.solax_measured_power`, a whole-connection three-phase
+measurement where positive means export and negative means import. `sensor.deye_grid_power`,
+`sensor.deye_external_power`, `sensor.solax_grid_import`, and `sensor.solax_grid_export` remain
+comparison diagnostics only.
+
+The rolling export average is derived from `max(sensor.solax_measured_power, 0)` and is
+time-weighted over the last 900 seconds. Instantaneous excursions above 9,800 W or 10,000 W are
+warnings only; only a time-weighted 15-minute average above 10,000 W is a flow violation.
+
+Timing:
+
+- heartbeat: 10 s,
+- passive flow monitoring: configurable, default 5 s,
+- shadow economic planner: 15 min.
+
+The flow tick does not call `execute_mode()` or any physical service. It only reads telemetry and
+publishes Energy V2 diagnostics. It skips overlapping flow evaluations.
+
+`WINTER_GRID_OPTIMIZATION` and `SERVICE` are accepted strategy helper values but are not
+implemented in phase 2; they return a passive `DISABLED` recommendation.
 
 ## Physical control boundary
 

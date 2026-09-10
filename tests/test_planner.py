@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from apps.energy_v2.models import Mode, TelemetrySnapshot
+from apps.energy_v2.flow import FlowAssessment
+from apps.energy_v2.models import FlowState, Mode, Strategy, TelemetrySnapshot
 from apps.energy_v2.planner import plan_shadow_mode
 
 
@@ -13,10 +14,15 @@ def snapshot(**overrides: object) -> TelemetrySnapshot:
         solax_battery_power_w=0.0,
         solax_pv_power_w=5000.0,
         solax_house_load_w=1000.0,
+        solax_measured_power_w=0.0,
+        solax_measured_power_l1_w=0.0,
+        solax_measured_power_l2_w=0.0,
+        solax_measured_power_l3_w=0.0,
         solax_grid_import_w=0.0,
         solax_grid_export_w=0.0,
         deye_soc_pct=50.0,
         deye_battery_power_w=0.0,
+        deye_battery_power_raw_w=0.0,
         deye_battery_state="idle",
         deye_grid_power_w=0.0,
         deye_external_power_w=0.0,
@@ -88,3 +94,16 @@ def test_grid_charging_enabled_blocks_pv_charge() -> None:
 def test_normal_idle() -> None:
     idle_snapshot = snapshot(solax_pv_power_w=1000.0, solax_house_load_w=800.0)
     assert decide(snapshot=idle_snapshot).mode is Mode.IDLE
+
+
+def test_flow_violation_fault_recommendation() -> None:
+    decision = decide(flow_assessment=FlowAssessment(FlowState.SOLAX_TO_DEYE, violations=("cycling",)))
+    assert decision.mode is Mode.FAULT
+    assert decision.flow_violation is True
+    assert decision.flow_state is FlowState.SOLAX_TO_DEYE
+
+
+def test_unimplemented_strategy_is_disabled() -> None:
+    decision = decide(strategy=Strategy.WINTER_GRID_OPTIMIZATION)
+    assert decision.mode is Mode.DISABLED
+    assert "not implemented" in decision.reason

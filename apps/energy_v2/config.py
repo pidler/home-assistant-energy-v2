@@ -5,10 +5,15 @@ ENTITY_IDS: dict[str, str] = {
     "solax_battery_power": "sensor.solax_battery_power_charge",
     "solax_pv_power": "sensor.solax_pv_power_total",
     "solax_house_load": "sensor.solax_house_load",
+    "solax_measured_power": "sensor.solax_measured_power",
+    "solax_measured_power_l1": "sensor.solax_measured_power_l1",
+    "solax_measured_power_l2": "sensor.solax_measured_power_l2",
+    "solax_measured_power_l3": "sensor.solax_measured_power_l3",
     "solax_grid_import": "sensor.solax_grid_import",
     "solax_grid_export": "sensor.solax_grid_export",
     "deye_soc": "sensor.deye_battery",
-    "deye_battery_power": "sensor.deye_battery_power",
+    "deye_battery_power": "sensor.battery_power_otoceny",
+    "deye_battery_power_raw": "sensor.deye_battery_power",
     "deye_battery_state": "sensor.deye_battery_state",
     "deye_grid_power": "sensor.deye_grid_power",
     "deye_external_power": "sensor.deye_external_power",
@@ -26,8 +31,22 @@ ENTITY_IDS: dict[str, str] = {
     "energy_v2_export_enabled": "input_boolean.energy_v2_export_enabled",
     "energy_v2_service_mode": "input_boolean.energy_v2_service_mode",
     "energy_v2_safe_to_enable": "input_boolean.energy_v2_safe_to_enable",
+    "energy_v2_strategy": "input_select.energy_v2_strategy",
     "energy_v2_requested_mode": "input_select.energy_v2_requested_mode",
     "energy_v2_actual_mode": "input_select.energy_v2_actual_mode",
+    "energy_v2_flow_state": "input_select.energy_v2_flow_state",
+    "energy_v2_flow_summary": "input_text.energy_v2_flow_summary",
+    "energy_v2_flow_warning": "input_text.energy_v2_flow_warning",
+    "energy_v2_flow_violation": "input_text.energy_v2_flow_violation",
+    "energy_v2_last_flow_violation": "input_datetime.energy_v2_last_flow_violation",
+    "energy_v2_instant_grid_export_w": "input_number.energy_v2_instant_grid_export_w",
+    "energy_v2_rolling_15min_export_w": "input_number.energy_v2_rolling_15min_export_w",
+    "energy_v2_export_window_covered_s": "input_number.energy_v2_export_window_covered_s",
+    "energy_v2_export_sample_age_s": "input_number.energy_v2_export_sample_age_s",
+    "energy_v2_export_limit_state": "input_select.energy_v2_export_limit_state",
+    "energy_v2_export_limit_summary": "input_text.energy_v2_export_limit_summary",
+    "energy_v2_last_valid_export_sample": "input_datetime.energy_v2_last_valid_export_sample",
+    "energy_v2_last_export_average_violation": "input_datetime.energy_v2_last_export_average_violation",
     "energy_v2_last_fault": "input_text.energy_v2_last_fault",
     "energy_v2_last_decision": "input_text.energy_v2_last_decision",
     "energy_v2_active_conflicts": "input_text.energy_v2_active_conflicts",
@@ -44,6 +63,7 @@ REQUIRED_TELEMETRY_KEYS: tuple[str, ...] = (
     "solax_battery_power",
     "solax_pv_power",
     "solax_house_load",
+    "solax_measured_power",
     "solax_grid_import",
     "solax_grid_export",
     "deye_soc",
@@ -59,7 +79,13 @@ REQUIRED_TELEMETRY_KEYS: tuple[str, ...] = (
     "deye_export_surplus",
 )
 
-OPTIONAL_TELEMETRY_KEYS: tuple[str, ...] = ("future_sell_rank",)
+OPTIONAL_TELEMETRY_KEYS: tuple[str, ...] = (
+    "future_sell_rank",
+    "solax_measured_power_l1",
+    "solax_measured_power_l2",
+    "solax_measured_power_l3",
+    "deye_battery_power_raw",
+)
 
 ENERGY_V2_HELPER_KEYS: tuple[str, ...] = (
     "energy_v2_enabled",
@@ -67,8 +93,22 @@ ENERGY_V2_HELPER_KEYS: tuple[str, ...] = (
     "energy_v2_export_enabled",
     "energy_v2_service_mode",
     "energy_v2_safe_to_enable",
+    "energy_v2_strategy",
     "energy_v2_requested_mode",
     "energy_v2_actual_mode",
+    "energy_v2_flow_state",
+    "energy_v2_flow_summary",
+    "energy_v2_flow_warning",
+    "energy_v2_flow_violation",
+    "energy_v2_last_flow_violation",
+    "energy_v2_instant_grid_export_w",
+    "energy_v2_rolling_15min_export_w",
+    "energy_v2_export_window_covered_s",
+    "energy_v2_export_sample_age_s",
+    "energy_v2_export_limit_state",
+    "energy_v2_export_limit_summary",
+    "energy_v2_last_valid_export_sample",
+    "energy_v2_last_export_average_violation",
     "energy_v2_last_fault",
     "energy_v2_last_decision",
     "energy_v2_active_conflicts",
@@ -84,10 +124,6 @@ LEGACY_MASTER_HELPER_KEYS: tuple[str, ...] = (
     "legacy_enabled",
     "current_energy_trading_enabled",
 )
-
-SOLAX_BATTERY_CHARGING_POSITIVE = True
-DEYE_BATTERY_DISCHARGING_POSITIVE = True
-DEYE_GRID_EXPORT_NEGATIVE = True
 
 OWNED_ACTUATORS: tuple[str, ...] = (
     "select.solax_charger_use_mode",

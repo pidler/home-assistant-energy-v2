@@ -16,23 +16,37 @@ REQUIRED_HELPERS: dict[str, set[str]] = {
         "energy_v2_safe_to_enable",
     },
     "input_select": {
+        "energy_v2_strategy",
         "energy_v2_requested_mode",
         "energy_v2_actual_mode",
         "energy_v2_app_status",
+        "energy_v2_flow_state",
+        "energy_v2_export_limit_state",
     },
     "input_text": {
         "energy_v2_last_fault",
         "energy_v2_last_decision",
         "energy_v2_active_conflicts",
         "energy_v2_last_evaluation_error",
+        "energy_v2_flow_summary",
+        "energy_v2_flow_warning",
+        "energy_v2_flow_violation",
+        "energy_v2_export_limit_summary",
     },
     "input_datetime": {
         "energy_v2_heartbeat",
         "energy_v2_last_successful_evaluation",
+        "energy_v2_last_flow_violation",
+        "energy_v2_last_export_average_violation",
+        "energy_v2_last_valid_export_sample",
     },
     "input_number": {
         "energy_v2_deye_fv_ledger",
         "energy_v2_solax_fv_ledger",
+        "energy_v2_instant_grid_export_w",
+        "energy_v2_rolling_15min_export_w",
+        "energy_v2_export_window_covered_s",
+        "energy_v2_export_sample_age_s",
     },
 }
 
@@ -42,11 +56,18 @@ EXPECTED_INITIALS: dict[tuple[str, str], str] = {
     ("input_boolean", "energy_v2_export_enabled"): "false",
     ("input_boolean", "energy_v2_service_mode"): "false",
     ("input_boolean", "energy_v2_safe_to_enable"): "false",
+    ("input_select", "energy_v2_strategy"): "SUMMER_NO_GRID_CHARGE",
     ("input_select", "energy_v2_requested_mode"): "DISABLED",
     ("input_select", "energy_v2_actual_mode"): "DISABLED",
     ("input_select", "energy_v2_app_status"): "STARTING",
+    ("input_select", "energy_v2_flow_state"): "UNKNOWN",
+    ("input_select", "energy_v2_export_limit_state"): "UNKNOWN",
     ("input_number", "energy_v2_deye_fv_ledger"): "0",
     ("input_number", "energy_v2_solax_fv_ledger"): "0",
+    ("input_number", "energy_v2_instant_grid_export_w"): "0",
+    ("input_number", "energy_v2_rolling_15min_export_w"): "0",
+    ("input_number", "energy_v2_export_window_covered_s"): "0",
+    ("input_number", "energy_v2_export_sample_age_s"): "0",
 }
 
 KEY_RE = re.compile(r"^(?P<indent> *)(?P<key>[A-Za-z0-9_]+):(?: +(?P<value>.*))?$")

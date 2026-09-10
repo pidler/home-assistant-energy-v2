@@ -29,6 +29,32 @@ class AppStatus(StrEnum):
     CONFIG_ERROR = "CONFIG_ERROR"
 
 
+class Strategy(StrEnum):
+    SUMMER_NO_GRID_CHARGE = "SUMMER_NO_GRID_CHARGE"
+    WINTER_GRID_OPTIMIZATION = "WINTER_GRID_OPTIMIZATION"
+    SERVICE = "SERVICE"
+
+
+class FlowState(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    NORMAL = "NORMAL"
+    GRID_IMPORT = "GRID_IMPORT"
+    GRID_EXPORT = "GRID_EXPORT"
+    LIKELY_PV_SURPLUS_CHARGE = "LIKELY_PV_SURPLUS_CHARGE"
+    SOLAX_TO_DEYE = "SOLAX_TO_DEYE"
+    DEYE_TO_SOLAX = "DEYE_TO_SOLAX"
+    CROSS_CHARGING = "CROSS_CHARGING"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
+class ExportLimitState(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    EXPORT_WITHIN_TARGET = "EXPORT_WITHIN_TARGET"
+    EXPORT_INSTANT_ABOVE_TARGET = "EXPORT_INSTANT_ABOVE_TARGET"
+    EXPORT_AVERAGE_NEAR_LIMIT = "EXPORT_AVERAGE_NEAR_LIMIT"
+    EXPORT_AVERAGE_LIMIT_VIOLATION = "EXPORT_AVERAGE_LIMIT_VIOLATION"
+
+
 @dataclass(frozen=True)
 class TelemetrySnapshot:
     timestamp: datetime
@@ -37,11 +63,16 @@ class TelemetrySnapshot:
     solax_battery_power_w: float | None
     solax_pv_power_w: float | None
     solax_house_load_w: float | None
+    solax_measured_power_w: float | None
+    solax_measured_power_l1_w: float | None
+    solax_measured_power_l2_w: float | None
+    solax_measured_power_l3_w: float | None
     solax_grid_import_w: float | None
     solax_grid_export_w: float | None
 
     deye_soc_pct: float | None
     deye_battery_power_w: float | None
+    deye_battery_power_raw_w: float | None
     deye_battery_state: str | None
     deye_grid_power_w: float | None
     deye_external_power_w: float | None
@@ -67,3 +98,6 @@ class PlannerDecision:
     mode: Mode
     reason: str
     confidence: str
+    flow_state: FlowState | None = None
+    flow_warning: bool = False
+    flow_violation: bool = False
