@@ -329,11 +329,18 @@ class TelemetryReader:
                 None,
                 telemetry_class,
             )
-        own_fresh = raw.age_s is not None and raw.age_s <= maximum_age_s
+        own_fresh = raw.age_s is not None and raw.age_s < maximum_age_s
         stable_zero = telemetry_class is TelemetryClass.STABLE_ZERO and raw.value == 0
         slow_state = telemetry_class is TelemetryClass.SLOW_STATE
         effective_fresh = own_fresh or stable_zero or slow_state
-        effective_timestamp = raw.timestamp if own_fresh else health_timestamp
+        if stable_zero:
+            effective_timestamp = (
+                max(raw.timestamp, health_timestamp) if health_timestamp is not None else raw.timestamp
+            )
+        elif slow_state and not own_fresh:
+            effective_timestamp = health_timestamp
+        else:
+            effective_timestamp = raw.timestamp
         if effective_fresh:
             reason = (
                 f"{entity_id} stable zero accepted with healthy source"
