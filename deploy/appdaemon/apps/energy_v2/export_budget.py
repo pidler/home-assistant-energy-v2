@@ -37,14 +37,21 @@ class FixedQuarterExportTracker:
         if not isfinite(export_w):
             return self.budget(at)
         start = quarter_start(at)
-        if self._quarter_start != start or self._last_at is None or at < self._last_at:
+        if self._last_at is None or at < self._last_at:
             self._quarter_start = start
             self._used_export_ws = 0.0
             self._last_at = at
             self._last_export_w = max(export_w, 0.0)
             return self.budget(at)
-        duration_s = max((at - self._last_at).total_seconds(), 0.0)
-        self._used_export_ws += self._last_export_w * duration_s
+        if self._quarter_start != start:
+            # The previous sample remains the best estimate until ``at``. Keep
+            # only the portion after the new fixed-quarter boundary.
+            duration_s = max((at - start).total_seconds(), 0.0)
+            self._quarter_start = start
+            self._used_export_ws = self._last_export_w * duration_s
+        else:
+            duration_s = max((at - self._last_at).total_seconds(), 0.0)
+            self._used_export_ws += self._last_export_w * duration_s
         self._last_at = at
         self._last_export_w = max(export_w, 0.0)
         return self.budget(at)

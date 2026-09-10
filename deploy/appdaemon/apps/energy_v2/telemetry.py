@@ -137,6 +137,8 @@ class TelemetryReader:
             deye_battery_power=self.numeric_sample("deye_battery_power", sampled_at, maximum_age_s),
             solax_soc=self.numeric_sample("solax_soc", sampled_at, maximum_age_s),
             deye_soc=self.numeric_sample("deye_soc", sampled_at, maximum_age_s),
+            solax_pv_power=self.numeric_sample("solax_pv_power", sampled_at, maximum_age_s),
+            deye_pv_power=self.numeric_sample("deye_pv_power", sampled_at, maximum_age_s),
         )
 
     def numeric_sample(self, key: str, now: datetime, maximum_age_s: float) -> NumericTelemetrySample:
@@ -162,7 +164,7 @@ def _state_timestamp(raw: object, fallback: datetime) -> datetime | None:
         return fallback
     value = raw.get("last_updated") or raw.get("last_changed")
     if value is None:
-        return fallback
+        return None
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, str):

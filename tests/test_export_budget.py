@@ -26,6 +26,19 @@ def test_fixed_quarter_resets_at_quarter_boundary() -> None:
     assert result.seconds_remaining == 900
 
 
+def test_fixed_quarter_splits_sample_interval_at_boundary() -> None:
+    before = datetime(2026, 9, 10, 12, 14, 58, tzinfo=UTC)
+    tracker = FixedQuarterExportTracker()
+    tracker.add_sample(before, 9000)
+
+    result = tracker.add_sample(before + timedelta(seconds=5), 1000)
+
+    assert result.used_export_kwh == 9000 * 3 / 3_600_000
+    assert result.seconds_remaining == 897
+    after = tracker.add_sample(before + timedelta(seconds=7), 1000)
+    assert after.used_export_kwh == (9000 * 3 + 1000 * 2) / 3_600_000
+
+
 def test_trailing_budget_is_diagnostic_and_preserves_rolling_input() -> None:
     rolling = RollingExportAverage(5000, 450, False)
     result = trailing_window_budget(rolling)

@@ -5,6 +5,7 @@
 - `sensor.solax_battery_capacity`
 - `sensor.solax_battery_power_charge`
 - `sensor.solax_pv_power_total`
+- `sensor.deye_pv_power` (required by Phase 4 total-PV validation; absence blocks a valid shadow command)
 - `sensor.solax_house_load`
 - `sensor.solax_measured_power`
 - `sensor.solax_measured_power_l1`

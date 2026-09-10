@@ -80,6 +80,7 @@ class BatteryAction(StrEnum):
 
 class CommandStatus(StrEnum):
     READY = "READY"
+    UNVERIFIED = "UNVERIFIED"
     SATURATED = "SATURATED"
     BLOCKED = "BLOCKED"
     EXPIRED = "EXPIRED"
@@ -115,6 +116,8 @@ class ControlTelemetrySnapshot:
     deye_battery_power: NumericTelemetrySample
     solax_soc: NumericTelemetrySample
     deye_soc: NumericTelemetrySample
+    solax_pv_power: NumericTelemetrySample | None = None
+    deye_pv_power: NumericTelemetrySample | None = None
 
 
 @dataclass(frozen=True)

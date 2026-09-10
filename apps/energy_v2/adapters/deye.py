@@ -32,17 +32,29 @@ class DeyeShadowAdapter:
             if measured_actual_power_w is None
             else abs(measured_actual_power_w - allowed) <= max(abs(allowed) * 0.1, 300.0)
         )
+        if command.action is BatteryAction.HOLD:
+            status = CommandStatus.UNVERIFIED
+            reason = "DEYE HOLD strategy is unverified; no physical work mode or register value is proposed"
+        elif measured_actual_power_w is None:
+            status = CommandStatus.UNVERIFIED
+            reason = (
+                "Battery-power feedback is unavailable; TOU power is an allowed ceiling, "
+                "not assumed exact, and the proposal cannot be verified"
+            )
+        else:
+            status = CommandStatus.SATURATED if saturated else CommandStatus.READY
+            reason = "TOU power is an allowed ceiling, not assumed exact battery power"
         return CommandResult(
             command.command_id,
             BatteryId.DEYE,
-            CommandStatus.SATURATED if saturated else CommandStatus.READY,
+            status,
             requested,
             allowed,
             allowed,
             measured_actual_power_w,
             saturated,
             matches,
-            "TOU power is an allowed ceiling, not assumed exact battery power",
+            reason,
             settings,
         )
 
@@ -64,4 +76,4 @@ class DeyeShadowAdapter:
                 ("tou_soc_pct", f"{command.max_soc_pct:.1f}"),
                 ("grid_charge", str(command.grid_charge_allowed).lower()),
             )
-        return (("work_mode", "HOLD"), ("tou_power_w", "0"))
+        return (("hold_strategy", "UNVERIFIED"),)

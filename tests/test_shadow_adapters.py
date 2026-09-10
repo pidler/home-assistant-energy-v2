@@ -5,7 +5,7 @@ from pathlib import Path
 
 from apps.energy_v2.adapters.deye import DeyeShadowAdapter, DeyeShadowCapabilities
 from apps.energy_v2.adapters.solax import SolaxShadowAdapter, SolaxShadowStrategy
-from apps.energy_v2.models import BatteryAction, BatteryCommand, BatteryId
+from apps.energy_v2.models import BatteryAction, BatteryCommand, BatteryId, CommandStatus
 
 NOW = datetime(2026, 9, 10, tzinfo=UTC)
 
@@ -33,14 +33,44 @@ def test_deye_tou_power_is_documented_as_ceiling() -> None:
     assert ("work_mode", "Export First") in result.proposed_settings
 
 
+def test_deye_hold_does_not_invent_a_physical_work_mode() -> None:
+    result = DeyeShadowAdapter().translate(command(BatteryId.DEYE, 0), 0)
+    assert result.status is CommandStatus.UNVERIFIED
+    assert result.proposed_settings == (("hold_strategy", "UNVERIFIED"),)
+    assert all(key != "work_mode" for key, _value in result.proposed_settings)
+
+
 def test_solax_grid_trim_is_diagnostic_and_has_no_trigger() -> None:
     adapter = SolaxShadowAdapter(SolaxShadowStrategy.GRID_TRIM)
-    result = adapter.translate(command(BatteryId.SOLAX, -1000), -800, grid_error_w=200)
+    result = adapter.translate(
+        command(BatteryId.SOLAX, -1000),
+        -800,
+        grid_error_w=200,
+        grid_target_w=3000,
+    )
     assert result.requested_power_w == -1000
     assert ("whole_site_grid_error_w", "200") in result.proposed_settings
     assert ("trigger", "NOT_CALLED") in result.proposed_settings
     assert not hasattr(adapter, "call_service")
     assert not hasattr(adapter, "write_register")
+
+
+def test_solax_grid_trim_uses_site_target_not_battery_residual() -> None:
+    battery_command = command(BatteryId.SOLAX, -1000)
+    grid = SolaxShadowAdapter(SolaxShadowStrategy.GRID_TRIM).translate(
+        battery_command,
+        -800,
+        grid_target_w=3000,
+    )
+    residual = SolaxShadowAdapter(SolaxShadowStrategy.BATTERY_RESIDUAL).translate(
+        battery_command,
+        -800,
+        grid_target_w=3000,
+    )
+    assert ("whole_site_grid_target_w", "3000") in grid.proposed_settings
+    assert all(key != "simulated_battery_power_w" for key, _value in grid.proposed_settings)
+    assert ("simulated_battery_power_w", "-1000") in residual.proposed_settings
+    assert all(key != "whole_site_grid_target_w" for key, _value in residual.proposed_settings)
 
 
 def test_shadow_adapter_sources_have_no_physical_write_api() -> None:

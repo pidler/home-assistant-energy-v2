@@ -35,6 +35,13 @@ negative result is invalid and is never silently clamped.
 
 sensor.solax_house_load remains a legacy diagnostic and is not required by the Phase 4 load model.
 
+Usable PV is independently validated as:
+
+    PV_total = sensor.solax_pv_power_total + sensor.deye_pv_power
+
+Both PV samples must be finite, non-negative, fresh and timestamped. A missing or stale input
+faults the shadow evaluation; it is never silently replaced with 0 W.
+
 ## Export budgets
 
 Two independent diagnostic views are maintained:
@@ -45,6 +52,8 @@ Two independent diagnostic views are maintained:
 Both calculate used energy, remaining operational and legal energy, time remaining, an available
 power budget and projected average. The legal limit is 10,000 W and the operational target is
 9,800 W. Neither interpretation is declared legally authoritative in Phase 4.
+Intervals crossing a wall-clock quarter boundary are split at that boundary, retaining the
+post-boundary portion in the new quarter.
 
 ## Allocation
 
@@ -69,10 +78,19 @@ The opposite transition follows the same rule. No corrective service call is mad
 The DEYE adapter proposes diagnostic values for Export First, TOU enable, TOU power/SOC, max sell
 power and discharge limits. Requested, allowed, predicted and measured power remain separate.
 TOU Power is treated as a ceiling, never as confirmed exact battery power.
+DEYE has no confirmed physical HOLD work mode. An abstract HOLD command is therefore marked
+UNVERIFIED and emits no work-mode or register proposal.
 
-The SolaX adapter supports BATTERY_RESIDUAL and preferred future GRID_TRIM. GRID_TRIM is based on
-the confirmed whole-site grid feedback, but the adapter emits only proposed settings and marks
-the Remote Control trigger as NOT_CALLED.
+The SolaX adapter keeps BATTERY_RESIDUAL and GRID_TRIM as different quantities. BATTERY_RESIDUAL
+uses battery power, while GRID_TRIM receives an explicit whole-site grid target from SiteCommand.
+It never substitutes battery residual power for a Grid Control target. The adapter emits only
+proposed settings and marks the Remote Control trigger as NOT_CALLED.
+
+Battery-power freshness is required for availability, anti-transfer feedback and zero-flow
+confirmation. A missing or stale sample resets transfer confirmation and produces UNVERIFIED,
+never READY. The existing FlowDebouncer confirms a continuously observed transfer for 10 seconds:
+a shorter event is TRANSFER_SUSPECTED and only a confirmed event becomes FAULT/RAMPING_DOWN in
+shadow diagnostics.
 
 ## Phase 3 integration
 

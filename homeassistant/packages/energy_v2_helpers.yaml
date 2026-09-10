@@ -121,7 +121,7 @@ input_select:
 
   energy_v2_command_status:
     name: ENERGY V2 shadow command stav
-    options: [READY, SATURATED, BLOCKED, EXPIRED, BREAK_BEFORE_MAKE, FAULT]
+    options: [READY, UNVERIFIED, SATURATED, BLOCKED, EXPIRED, BREAK_BEFORE_MAKE, FAULT]
     initial: BLOCKED
 
 input_number:

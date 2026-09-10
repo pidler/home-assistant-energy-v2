@@ -357,28 +357,33 @@ class EnergyV2App(hass.Hass):
             deye = BatteryAvailability(
                 BatteryId.DEYE,
                 telemetry.deye_soc.quality is TelemetryQuality.VALID
+                and telemetry.deye_battery_power.quality is TelemetryQuality.VALID
                 and parse_bool_state(self.get_state(self.entity_ids["deye_connection"])) is True,
                 telemetry.deye_soc.value,
                 self.system_parameters.deye_min_soc_pct,
                 float(self.args.get("deye_max_soc_pct", 100.0)),
                 self.system_parameters.deye_rated_power_w,
                 self.system_parameters.deye_rated_power_w,
-                telemetry.deye_battery_power.value,
+                telemetry.deye_battery_power.value
+                if telemetry.deye_battery_power.quality is TelemetryQuality.VALID
+                else None,
             )
             solax = BatteryAvailability(
                 BatteryId.SOLAX,
-                telemetry.solax_soc.quality is TelemetryQuality.VALID,
+                telemetry.solax_soc.quality is TelemetryQuality.VALID
+                and telemetry.solax_battery_power.quality is TelemetryQuality.VALID,
                 telemetry.solax_soc.value,
                 self.system_parameters.solax_min_soc_pct,
                 100.0,
                 self.system_parameters.solax_rated_power_w,
                 self.system_parameters.solax_rated_power_w,
-                telemetry.solax_battery_power.value,
+                telemetry.solax_battery_power.value
+                if telemetry.solax_battery_power.quality is TelemetryQuality.VALID
+                else None,
             )
             result = self.shadow_control.evaluate(
                 telemetry,
                 command,
-                pv_power_w=parse_float_state(self.get_state(self.entity_ids["solax_pv_power"])) or 0.0,
                 deye=deye,
                 solax=solax,
             )
@@ -421,7 +426,11 @@ class EnergyV2App(hass.Hass):
         if result.grid_error_w is not None:
             self._set_helper("energy_v2_grid_error_w", f"{result.grid_error_w:.1f}")
         anti_state = (
-            "FAULT" if result.runtime_anti_transfer_state.startswith("FAULT") else result.runtime_anti_transfer_state
+            "FAULT"
+            if result.runtime_anti_transfer_state.startswith("FAULT")
+            else "CLEAR"
+            if result.runtime_anti_transfer_state == "CLEAR"
+            else "UNVERIFIED"
         )
         self._set_helper("energy_v2_anti_transfer_state", anti_state)
         self._set_helper("energy_v2_break_before_make_state", allocation.break_before_make_state)

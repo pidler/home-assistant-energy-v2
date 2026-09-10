@@ -77,3 +77,16 @@ def test_numeric_sample_reports_stale_quality() -> None:
     result = reader.numeric_sample("power", now, 5)
     assert not result.fresh
     assert result.quality is TelemetryQuality.STALE
+
+
+def test_timestamped_dict_without_timestamp_is_invalid_not_fresh() -> None:
+    now = datetime(2026, 9, 10, 12, tzinfo=UTC)
+    reader = TelemetryReader(SampleReader({"state": "123", "attributes": {}}), {"power": "sensor.power"})
+
+    result = reader.numeric_sample("power", now, 5)
+
+    assert result.value == 123
+    assert result.timestamp is None
+    assert result.age_s is None
+    assert not result.fresh
+    assert result.quality is TelemetryQuality.INVALID

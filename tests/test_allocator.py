@@ -176,3 +176,34 @@ def test_break_before_make_waits_for_confirmed_zero_flow() -> None:
         solax=battery(BatteryId.SOLAX),
     )
     assert resumed.deye.action is BatteryAction.CHARGE
+
+
+def test_missing_power_feedback_cannot_confirm_zero_flow() -> None:
+    control = allocator()
+    control.allocate(
+        site(grid_target_w=1000),
+        now=NOW,
+        site_load_w=0,
+        pv_power_w=0,
+        deye=battery(BatteryId.DEYE, measured_power_w=-1000),
+        solax=battery(BatteryId.SOLAX),
+    )
+    control.allocate(
+        site(grid_target_w=0),
+        now=NOW + timedelta(seconds=1),
+        site_load_w=0,
+        pv_power_w=1000,
+        deye=battery(BatteryId.DEYE, measured_power_w=None),
+        solax=battery(BatteryId.SOLAX),
+    )
+    still_waiting = control.allocate(
+        site(grid_target_w=0),
+        now=NOW + timedelta(seconds=20),
+        site_load_w=0,
+        pv_power_w=1000,
+        deye=battery(BatteryId.DEYE, measured_power_w=None),
+        solax=battery(BatteryId.SOLAX),
+    )
+    assert still_waiting.status is CommandStatus.BREAK_BEFORE_MAKE
+    assert still_waiting.deye.action is BatteryAction.HOLD
+    assert "WAIT_ZERO" in still_waiting.break_before_make_state
