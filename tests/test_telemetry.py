@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from apps.energy_v2.config import ENTITY_IDS
+from apps.energy_v2.load_model import estimate_whole_site_load
 from apps.energy_v2.models import TelemetryClass, TelemetryQuality
 from apps.energy_v2.telemetry import (
     TelemetryFreshnessConfig,
@@ -181,6 +182,28 @@ def test_old_zero_grid_is_valid_when_solax_source_is_healthy() -> None:
     assert grid.effective_timestamp == NOW - timedelta(seconds=15)
 
 
+def test_zero_grid_at_age_limit_uses_newer_solax_health_timestamp() -> None:
+    states = control_states()
+    states[ENTITY_IDS["solax_inverter_power"]] = timestamped(1000, 10)
+    states[ENTITY_IDS["solax_measured_power"]] = timestamped(0, 60)
+
+    grid = control_snapshot(states).whole_site_grid_power
+
+    assert grid.quality is TelemetryQuality.VALID
+    assert grid.effective_timestamp == NOW - timedelta(seconds=10)
+
+
+def test_five_minute_old_zero_grid_uses_recent_solax_health_timestamp() -> None:
+    states = control_states()
+    states[ENTITY_IDS["solax_inverter_power"]] = timestamped(1000, 10)
+    states[ENTITY_IDS["solax_measured_power"]] = timestamped(0, 300)
+
+    grid = control_snapshot(states).whole_site_grid_power
+
+    assert grid.quality is TelemetryQuality.VALID
+    assert grid.effective_timestamp == NOW - timedelta(seconds=10)
+
+
 def test_old_nonzero_grid_is_stale_even_with_healthy_solax_source() -> None:
     states = control_states()
     states[ENTITY_IDS["solax_measured_power"]] = timestamped(100, 120)
@@ -188,6 +211,64 @@ def test_old_nonzero_grid_is_stale_even_with_healthy_solax_source() -> None:
     assert grid.source_healthy
     assert not grid.effective_fresh
     assert grid.quality is TelemetryQuality.STALE
+
+
+def test_nonzero_export_at_age_limit_is_stale_despite_healthy_solax_source() -> None:
+    states = control_states()
+    states[ENTITY_IDS["solax_measured_power"]] = timestamped(3000, 60)
+
+    grid = control_snapshot(states).whole_site_grid_power
+
+    assert grid.source_healthy
+    assert not grid.effective_fresh
+    assert grid.quality is TelemetryQuality.STALE
+    assert grid.effective_timestamp == NOW - timedelta(seconds=60)
+
+
+def test_nonzero_import_at_age_limit_is_stale_despite_healthy_solax_source() -> None:
+    states = control_states()
+    states[ENTITY_IDS["solax_measured_power"]] = timestamped(-1000, 60)
+
+    grid = control_snapshot(states).whole_site_grid_power
+
+    assert grid.source_healthy
+    assert not grid.effective_fresh
+    assert grid.quality is TelemetryQuality.STALE
+    assert grid.effective_timestamp == NOW - timedelta(seconds=60)
+
+
+def test_whole_site_load_uses_stable_zero_grid_effective_timestamp() -> None:
+    states = control_states()
+    states[ENTITY_IDS["solax_inverter_power"]] = timestamped(1000, 10)
+    states[ENTITY_IDS["deye_inverter_power"]] = timestamped(200, 5)
+    states[ENTITY_IDS["solax_measured_power"]] = timestamped(0, 60)
+    snapshot = control_snapshot(states)
+
+    result = estimate_whole_site_load(
+        snapshot.solax_inverter_power,
+        snapshot.deye_inverter_power,
+        snapshot.whole_site_grid_power,
+    )
+
+    assert result.quality is TelemetryQuality.VALID
+    assert result.timestamp_skew_s == 5
+    assert result.load_w == 1200
+
+
+def test_whole_site_load_rejects_zero_grid_when_solax_source_is_dead() -> None:
+    states = control_states()
+    states[ENTITY_IDS["solax_inverter_power"]] = timestamped(1000, 61)
+    states[ENTITY_IDS["solax_battery_power"]] = timestamped(0, 61)
+    snapshot = control_snapshot(states)
+
+    result = estimate_whole_site_load(
+        snapshot.solax_inverter_power,
+        snapshot.deye_inverter_power,
+        snapshot.whole_site_grid_power,
+    )
+
+    assert result.quality is TelemetryQuality.STALE
+    assert result.load_w is None
 
 
 def test_frozen_solax_source_makes_dependent_states_stale() -> None:
@@ -220,6 +301,7 @@ def test_stale_battery_feedback_remains_unverified_even_if_sibling_is_fresh() ->
     assert battery.source_healthy
     assert not battery.effective_fresh
     assert battery.quality is TelemetryQuality.STALE
+    assert battery.effective_timestamp == NOW - timedelta(seconds=31)
 
 
 def test_soc_outside_zero_to_one_hundred_is_invalid() -> None:
