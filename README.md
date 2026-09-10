@@ -17,6 +17,9 @@ Current development:
   import for the whole connection.
 - battery power is normalized internally as positive charging and negative discharging for both
   SolaX and DEYE; DEYE uses existing `sensor.battery_power_otoceny`.
+- phase 4 adds a strictly shadow-only whole-site load model, export budgets, DEYE-first power
+  allocator, anti-transfer simulation and inverter-specific diagnostic adapters.
+- the command target remains static; no trading optimizer is implemented.
 
 Safety boundary:
 

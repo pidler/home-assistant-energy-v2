@@ -33,6 +33,8 @@ def snapshot(**overrides: object) -> TelemetrySnapshot:
         future_sell_rank=5.0,
         deye_grid_charging_enabled=False,
         deye_export_enabled=False,
+        solax_inverter_power_w=1000.0,
+        deye_inverter_power_w=0.0,
     )
     data.update(overrides)
     return TelemetrySnapshot(**data)

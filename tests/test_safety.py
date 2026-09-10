@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from apps.energy_v2.config import REQUIRED_TELEMETRY_KEYS
 from apps.energy_v2.models import TelemetrySnapshot, ValidationResult
 from apps.energy_v2.safety import find_active_conflicts, find_missing_entities, safe_to_enable, validate_telemetry
 
@@ -32,6 +33,8 @@ def snapshot(**overrides: object) -> TelemetrySnapshot:
         future_sell_rank=5.0,
         deye_grid_charging_enabled=False,
         deye_export_enabled=False,
+        solax_inverter_power_w=1000.0,
+        deye_inverter_power_w=0.0,
     )
     data.update(overrides)
     return TelemetrySnapshot(**data)
@@ -74,6 +77,18 @@ def test_missing_soc_invalid() -> None:
     result = validate_telemetry(snapshot(deye_soc_pct=None))
     assert not result.valid
     assert "DEYE SOC is missing" in result.reasons
+
+
+def test_missing_whole_site_inverter_power_is_invalid() -> None:
+    result = validate_telemetry(snapshot(solax_inverter_power_w=None))
+    assert not result.valid
+    assert "SolaX inverter power is missing" in result.reasons
+
+
+def test_legacy_house_load_is_not_required_by_new_controller() -> None:
+    assert "solax_house_load" not in REQUIRED_TELEMETRY_KEYS
+    assert "solax_inverter_power" in REQUIRED_TELEMETRY_KEYS
+    assert "deye_inverter_power" in REQUIRED_TELEMETRY_KEYS
 
 
 def test_solax_soc_below_zero_invalid() -> None:

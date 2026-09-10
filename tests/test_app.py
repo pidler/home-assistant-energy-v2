@@ -32,7 +32,9 @@ class StubHass:
                 return None
             if isinstance(value, dict):
                 return value
-            return {"state": value}
+            # Unit-test fallback: real AppDaemon returns a timestamped dict,
+            # while scalar stubs deliberately exercise the non-dict path.
+            return value
         if isinstance(value, dict):
             return value.get("state")
         return value
@@ -107,7 +109,9 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["solax_soc"]: "96",
             ENTITY_IDS["solax_battery_power"]: "0",
             ENTITY_IDS["solax_pv_power"]: "5000",
+            ENTITY_IDS["deye_pv_power"]: "0",
             ENTITY_IDS["solax_house_load"]: "1000",
+            ENTITY_IDS["solax_inverter_power"]: "1000",
             ENTITY_IDS["solax_measured_power"]: "0",
             ENTITY_IDS["solax_measured_power_l1"]: "0",
             ENTITY_IDS["solax_measured_power_l2"]: "0",
@@ -115,6 +119,7 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["solax_grid_import"]: "0",
             ENTITY_IDS["solax_grid_export"]: "0",
             ENTITY_IDS["deye_soc"]: "50",
+            ENTITY_IDS["deye_inverter_power"]: "0",
             ENTITY_IDS["deye_battery_power"]: "0",
             ENTITY_IDS["deye_battery_power_raw"]: "0",
             ENTITY_IDS["deye_battery_state"]: "idle",
@@ -146,6 +151,7 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["energy_v2_export_limit_summary"]: "",
             ENTITY_IDS["energy_v2_deye_fv_ledger"]: "1",
             ENTITY_IDS["energy_v2_solax_fv_ledger"]: "0",
+            ENTITY_IDS["energy_v2_control_shadow_enabled"]: "on",
         }
     )
     states.update({entity_id: "off" for entity_id in DEFAULT_CONFLICTING_AUTOMATIONS})
@@ -155,6 +161,84 @@ def valid_states() -> dict[str, Any]:
 
 def helper_value(app: StubHass, key: str) -> Any:
     return app.states[ENTITY_IDS[key]]
+
+
+def test_phase4_control_tick_publishes_helpers_only() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    app.services.clear()
+
+    app._control_tick()
+
+    assert helper_value(app, "energy_v2_load_quality") == "VALID"
+    assert helper_value(app, "energy_v2_command_status") in {
+        "READY",
+        "UNVERIFIED",
+        "SATURATED",
+        "BREAK_BEFORE_MAKE",
+    }
+    assert all(service.startswith("input_") for service, _kwargs in app.services)
+    assert all(kwargs["entity_id"].startswith("input_") for _service, kwargs in app.services)
+    assert all(kwargs["entity_id"] not in OWNED_ACTUATORS for _service, kwargs in app.services)
+
+
+def test_phase4_requires_both_pv_inputs_and_never_substitutes_zero() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["deye_pv_power"]] = "unavailable"
+    app.initialize()
+
+    app._control_tick()
+
+    assert helper_value(app, "energy_v2_command_status") == "FAULT"
+    assert "Invalid PV inputs" in helper_value(app, "energy_v2_saturation_reason")
+
+
+def test_phase4_stale_pv_input_faults_instead_of_becoming_zero() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["deye_pv_power"]] = {
+        "state": "0",
+        "last_updated": "2000-01-01T00:00:00+00:00",
+    }
+    app.initialize()
+
+    app._control_tick()
+
+    assert helper_value(app, "energy_v2_command_status") == "FAULT"
+    assert "Stale PV inputs" in helper_value(app, "energy_v2_saturation_reason")
+
+
+def test_phase4_stale_battery_power_is_unverified_for_both_inverters() -> None:
+    module = import_app_module()
+    for key in ("deye_battery_power", "solax_battery_power"):
+        app = module.EnergyV2App()
+        app.states = valid_states()
+        app.states[ENTITY_IDS[key]] = {
+            "state": "0",
+            "last_updated": "2000-01-01T00:00:00+00:00",
+        }
+        app.initialize()
+
+        app._control_tick()
+
+        assert helper_value(app, "energy_v2_command_status") == "UNVERIFIED"
+        assert helper_value(app, "energy_v2_anti_transfer_state") == "UNVERIFIED"
+        assert "battery-power feedback is not fresh" in helper_value(app, "energy_v2_saturation_reason")
+
+
+def test_planner_control_and_flow_intervals_are_separate() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    intervals = [interval for _callback, interval in app.run_every_callbacks]
+    assert 900 in intervals
+    assert intervals.count(5) >= 2
 
 
 def test_stubbed_appdaemon_import_matches_appdaemon_module_config() -> None:

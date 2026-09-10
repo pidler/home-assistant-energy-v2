@@ -17,6 +17,11 @@ energy_v2:
   export_average_window_s: 900
   export_sample_max_age_s: 120
   flow_tick_interval_s: 5
+  shadow_control_interval_s: 5
+  shadow_site_target_w: 0
+  shadow_slew_limit_w_per_tick: 2000
+  shadow_zero_flow_tolerance_w: 300
+  shadow_zero_flow_confirmation_s: 10
   flow_thresholds:
     grid_import_warning_w: 200
     grid_import_violation_w: 500

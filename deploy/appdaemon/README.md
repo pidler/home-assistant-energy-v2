@@ -1,7 +1,8 @@
 # ENERGY V2 AppDaemon deployment package
 
 This directory is a copy-ready package for the passive ENERGY V2 AppDaemon app.
-Phase 2 adds summer flow monitoring diagnostics only.
+Phases 2-4 add diagnostics only. Phase 4 introduces whole-site load, export-budget, allocator,
+anti-transfer and inverter-adapter simulations without any physical execution path.
 
 Phase 2 hardening uses:
 

@@ -59,3 +59,16 @@ The regulator must:
 - prevent independent SolaX and DEYE export budgets,
 - never intentionally request more than the 9,800 W operational target,
 - protect the 15-minute average independently from economic trading logic.
+
+## Phase 4 - shadow control core
+
+Status: implemented on feature/phase-4-shadow-control-core; not deployed.
+
+- whole-site AC load estimation from both inverter outputs and the connection meter,
+- fixed-quarter and trailing-900-second diagnostic export budgets,
+- DEYE-first allocation with SolaX residual,
+- SOC, availability, expiry, saturation and export-budget constraints,
+- anti-transfer validation and simulated break-before-make,
+- DEYE and SolaX shadow adapters with requested/allowed/predicted/actual separation.
+
+Trading optimization and physical execution remain future phases.

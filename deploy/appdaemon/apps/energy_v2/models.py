@@ -67,6 +67,100 @@ class ChargeShadowState(StrEnum):
     FAULT = "FAULT"
 
 
+class BatteryId(StrEnum):
+    DEYE = "DEYE"
+    SOLAX = "SOLAX"
+
+
+class BatteryAction(StrEnum):
+    HOLD = "HOLD"
+    CHARGE = "CHARGE"
+    DISCHARGE = "DISCHARGE"
+
+
+class CommandStatus(StrEnum):
+    READY = "READY"
+    UNVERIFIED = "UNVERIFIED"
+    SATURATED = "SATURATED"
+    BLOCKED = "BLOCKED"
+    EXPIRED = "EXPIRED"
+    BREAK_BEFORE_MAKE = "BREAK_BEFORE_MAKE"
+    FAULT = "FAULT"
+
+
+class TelemetryQuality(StrEnum):
+    VALID = "VALID"
+    STALE = "STALE"
+    MISSING = "MISSING"
+    INVALID = "INVALID"
+    SKEWED = "SKEWED"
+
+
+@dataclass(frozen=True)
+class NumericTelemetrySample:
+    value: float | None
+    timestamp: datetime | None
+    age_s: float | None
+    fresh: bool
+    quality: TelemetryQuality
+    entity_id: str = ""
+
+
+@dataclass(frozen=True)
+class ControlTelemetrySnapshot:
+    sampled_at: datetime
+    solax_inverter_power: NumericTelemetrySample
+    deye_inverter_power: NumericTelemetrySample
+    whole_site_grid_power: NumericTelemetrySample
+    solax_battery_power: NumericTelemetrySample
+    deye_battery_power: NumericTelemetrySample
+    solax_soc: NumericTelemetrySample
+    deye_soc: NumericTelemetrySample
+    solax_pv_power: NumericTelemetrySample | None = None
+    deye_pv_power: NumericTelemetrySample | None = None
+
+
+@dataclass(frozen=True)
+class SiteCommand:
+    command_id: str
+    created_at: datetime
+    expires_at: datetime
+    grid_target_w: float
+    max_export_w: float = 9_800.0
+    transfer_allowed: bool = False
+    preferred_battery: BatteryId = BatteryId.DEYE
+    grid_charge_allowed: bool = False
+
+
+@dataclass(frozen=True)
+class BatteryCommand:
+    command_id: str
+    site_command_id: str
+    battery: BatteryId
+    action: BatteryAction
+    target_power_w: float
+    min_soc_pct: float
+    max_soc_pct: float
+    grid_charge_allowed: bool
+    export_allowed: bool
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    command_id: str
+    battery: BatteryId
+    status: CommandStatus
+    requested_power_w: float
+    allowed_power_w: float
+    simulated_power_w: float
+    measured_actual_power_w: float | None
+    saturated: bool
+    readback_matches: bool | None
+    reason: str
+    proposed_settings: tuple[tuple[str, str], ...] = ()
+
+
 @dataclass(frozen=True)
 class TelemetrySnapshot:
     timestamp: datetime
@@ -97,6 +191,8 @@ class TelemetrySnapshot:
 
     deye_grid_charging_enabled: bool | None
     deye_export_enabled: bool | None
+    solax_inverter_power_w: float | None = None
+    deye_inverter_power_w: float | None = None
 
 
 @dataclass(frozen=True)

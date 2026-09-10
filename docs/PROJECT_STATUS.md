@@ -1,16 +1,16 @@
 # ENERGY V2 project status
 
-Date: 2026-08-03.
+Date: 2026-09-10.
 
 ## Current stable state
 
-- `main` contains `v0.1.0-shadow`.
+- `main` contains merged Phases 1, 2 and 3 at `73637cb6f5a15f95ddb294649a30d9ceb7a1c3c6`.
 - Phase 1 is a passive AppDaemon shadow controller.
 - Phase 1 was validated in production without physical inverter control.
 
-## Current pull request
+## Merged passive phases
 
-- PR #2 develops phase 2 summer flow monitoring.
+- PR #2 merged phase 2 summer flow monitoring.
 - Phase 2 was passively deployed to production from `0a39a6ca2f0cbe295a61a53f5e64f3c624d5fb32` on 2026-08-03.
 - The deployment is running, but remains **DEPLOYED, not yet VALIDATED** by multi-day observation.
 - Phase 2 remains passive and diagnostic only.
@@ -38,7 +38,7 @@ Date: 2026-08-03.
 
 ## Phase 3 development
 
-Status: **IMPLEMENTED** in `feature/phase-3-deye-charge-shadow`; **NOT DEPLOYED** and **NOT VALIDATED**.
+Status: **MERGED TO MAIN**; production deployment and physical validation remain separate.
 
 Phase 3 adds a pure shadow state machine for a proposed DEYE charge-current limit from SolaX PV
 surplus. It only publishes diagnostics and mode mismatches. Active charging, sale, and discharge
@@ -64,3 +64,10 @@ KeyError: 'charge_shadow'. Production remains on healthy Phase 2. Phase 3 is
 IMPLEMENTED, NOT DEPLOYED, and NOT VALIDATED. PR #3 now contains a validated
 configuration model and regression coverage, but the correction has not been
 redeployed. Physical control remains deferred.
+
+## Phase 4 development
+
+Phase 4 is developed on `feature/phase-4-shadow-control-core`. It adds only a shadow command
+model, timestamped whole-site telemetry, load estimation, diagnostic export budgets, DEYE-first
+allocation, anti-transfer/break-before-make simulation and shadow inverter adapters. It does not
+contain the future trading optimizer or a physical execution path.
