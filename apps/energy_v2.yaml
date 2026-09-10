@@ -22,6 +22,11 @@ energy_v2:
   shadow_slew_limit_w_per_tick: 2000
   shadow_zero_flow_tolerance_w: 300
   shadow_zero_flow_confirmation_s: 10
+  solax_fast_power_max_age_s: 60
+  deye_fast_power_max_age_s: 30
+  fast_input_max_skew_s: 20
+  solax_source_health_window_s: 60
+  deye_source_health_window_s: 30
   flow_thresholds:
     grid_import_warning_w: 200
     grid_import_violation_w: 500

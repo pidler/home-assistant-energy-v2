@@ -14,6 +14,37 @@ def sample(value: float | None, *, age: float = 0, name: str = "sensor.test") ->
     return NumericTelemetrySample(value, timestamp, age if value is not None else None, age <= 15, quality, name)
 
 
+def healthy_stable_zero(age: float, *, effective_age: float = 15) -> NumericTelemetrySample:
+    return NumericTelemetrySample(
+        0,
+        NOW - timedelta(seconds=age),
+        age,
+        True,
+        TelemetryQuality.VALID,
+        "sensor.solax_measured_power",
+        True,
+        True,
+        "stable zero accepted",
+        NOW - timedelta(seconds=effective_age),
+    )
+
+
+def healthy_fast(value: float, age: float) -> NumericTelemetrySample:
+    timestamp = NOW - timedelta(seconds=age)
+    return NumericTelemetrySample(
+        value,
+        timestamp,
+        age,
+        True,
+        TelemetryQuality.VALID,
+        "sensor.fast_power",
+        True,
+        True,
+        "source healthy",
+        timestamp,
+    )
+
+
 def test_replay_2026_09_10_deye_export_whole_site_load() -> None:
     # Observed during the read-only export audit: 82 W + 9797 W - 9329 W.
     result = estimate_whole_site_load(sample(82), sample(9797), sample(9329))
@@ -44,6 +75,21 @@ def test_timestamp_skew_is_invalid() -> None:
         LoadModelParameters(maximum_timestamp_skew_s=5),
     )
     assert result.quality is TelemetryQuality.SKEWED
+
+
+def test_production_5_and_15_second_cadence_is_valid_with_twenty_second_skew() -> None:
+    result = estimate_whole_site_load(sample(100, age=15), sample(200, age=5), healthy_stable_zero(3600))
+    assert result.quality is TelemetryQuality.VALID
+    assert result.timestamp_skew_s == 10
+    assert result.load_w == 300
+
+
+def test_excessive_effective_timestamp_skew_is_rejected() -> None:
+    result = estimate_whole_site_load(
+        healthy_fast(100, age=50), healthy_fast(200, age=5), healthy_stable_zero(3600, effective_age=50)
+    )
+    assert result.quality is TelemetryQuality.SKEWED
+    assert result.timestamp_skew_s == 45
 
 
 def test_significantly_negative_load_is_not_clamped() -> None:

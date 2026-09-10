@@ -197,7 +197,7 @@ def test_phase4_requires_both_pv_inputs_and_never_substitutes_zero() -> None:
     assert "Invalid PV inputs" in helper_value(app, "energy_v2_saturation_reason")
 
 
-def test_phase4_stale_pv_input_faults_instead_of_becoming_zero() -> None:
+def test_phase4_stable_zero_pv_is_valid_with_healthy_deye_source() -> None:
     module = import_app_module()
     app = module.EnergyV2App()
     app.states = valid_states()
@@ -209,8 +209,8 @@ def test_phase4_stale_pv_input_faults_instead_of_becoming_zero() -> None:
 
     app._control_tick()
 
-    assert helper_value(app, "energy_v2_command_status") == "FAULT"
-    assert "Stale PV inputs" in helper_value(app, "energy_v2_saturation_reason")
+    assert helper_value(app, "energy_v2_load_quality") == "VALID"
+    assert "Stale PV inputs" not in helper_value(app, "energy_v2_saturation_reason")
 
 
 def test_phase4_stale_battery_power_is_unverified_for_both_inverters() -> None:
@@ -239,6 +239,28 @@ def test_planner_control_and_flow_intervals_are_separate() -> None:
     intervals = [interval for _callback, interval in app.run_every_callbacks]
     assert 900 in intervals
     assert intervals.count(5) >= 2
+
+
+def test_phase4_freshness_windows_are_configurable_from_appdaemon_args() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.args.update(
+        {
+            "solax_fast_power_max_age_s": 70,
+            "deye_fast_power_max_age_s": 35,
+            "fast_input_max_skew_s": 25,
+            "solax_source_health_window_s": 75,
+            "deye_source_health_window_s": 40,
+        }
+    )
+    app.states = valid_states()
+    app.initialize()
+
+    assert app.telemetry_freshness.solax_fast_power_max_age_s == 70
+    assert app.telemetry_freshness.deye_fast_power_max_age_s == 35
+    assert app.shadow_control.load_parameters.maximum_timestamp_skew_s == 25
+    assert app.telemetry_freshness.solax_source_health_window_s == 75
+    assert app.telemetry_freshness.deye_source_health_window_s == 40
 
 
 def test_stubbed_appdaemon_import_matches_appdaemon_module_config() -> None:

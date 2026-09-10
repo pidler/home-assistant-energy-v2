@@ -1,10 +1,10 @@
 # ENERGY V2 project status
 
-Date: 2026-09-10.
+Date: 2026-09-11.
 
 ## Current stable state
 
-- `main` contains merged Phases 1, 2 and 3 at `73637cb6f5a15f95ddb294649a30d9ceb7a1c3c6`.
+- `main` contains merged Phases 1-4 at `16cdb2730f702900537d838b0e09ea01e9896b95`.
 - Phase 1 is a passive AppDaemon shadow controller.
 - Phase 1 was validated in production without physical inverter control.
 
@@ -67,7 +67,13 @@ redeployed. Physical control remains deferred.
 
 ## Phase 4 development
 
-Phase 4 is developed on `feature/phase-4-shadow-control-core`. It adds only a shadow command
+Phase 4 shadow control core is merged to `main`. It adds only a shadow command
 model, timestamped whole-site telemetry, load estimation, diagnostic export budgets, DEYE-first
 allocation, anti-transfer/break-before-make simulation and shadow inverter adapters. It does not
 contain the future trading optimizer or a physical execution path.
+
+The follow-up `feature/phase-4-telemetry-freshness` replaces the original universal 15-second
+freshness and 5-second skew assumptions with production-derived per-source policy. It separates
+state change age from inferred source health, accepts healthy slow SOC and exact stable-zero
+PV/grid states, and keeps battery-power feedback strictly freshness-gated. This work remains
+shadow-only and is not a production deployment.

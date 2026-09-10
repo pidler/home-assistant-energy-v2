@@ -28,10 +28,32 @@ The controller uses:
 
     L_site = sensor.solax_inverter_power + sensor.deye_power - sensor.solax_measured_power
 
-All three samples carry their source timestamp, age, freshness and quality. The result is invalid
-when a sample is missing, stale, non-finite, or timestamp skew exceeds the configured tolerance.
+All three samples carry their state timestamp, age, value validity, source health, effective
+freshness, effective timestamp and quality. The result is invalid when a sample is missing,
+non-finite, effectively stale, or effective timestamp skew exceeds the configured tolerance.
 A small negative result may be accepted only inside the measurement tolerance; a materially
 negative result is invalid and is never silently clamped.
+
+The telemetry reader does not treat Home Assistant `last_updated` as a communication heartbeat.
+It classifies inputs as `FAST_POWER`, `SLOW_STATE`, or `STABLE_ZERO`. SolaX source health is
+inferred from recent valid SolaX AC or battery-power telemetry; DEYE uses the corresponding DEYE
+signals and an explicit disconnected state is a veto. A slow SOC sample remains usable while its
+source is healthy. Exactly zero PV or grid power remains usable while its source is healthy. A
+non-zero power sample must still satisfy its own age limit.
+
+Production-derived defaults are configurable in AppDaemon:
+
+- `solax_fast_power_max_age_s`: 60 s,
+- `deye_fast_power_max_age_s`: 30 s,
+- `fast_input_max_skew_s`: 20 s,
+- `solax_source_health_window_s`: 60 s,
+- `deye_source_health_window_s`: 30 s.
+
+When an old SOC or stable-zero state is accepted, its effective timestamp is the timestamp of the
+fast signal that proved source health. This prevents a legitimate unchanged state from creating
+artificial multi-hour skew. If neither fast signal is recent, all dependent slow/stable samples
+become stale. This is a conservative inference, not a substitute for a future integration-level
+communication heartbeat.
 
 sensor.solax_house_load remains a legacy diagnostic and is not required by the Phase 4 load model.
 
@@ -39,7 +61,8 @@ Usable PV is independently validated as:
 
     PV_total = sensor.solax_pv_power_total + sensor.deye_pv_power
 
-Both PV samples must be finite, non-negative, fresh and timestamped. A missing or stale input
+Both PV samples must be finite, non-negative and effectively fresh. A stable exact zero is valid
+only with a healthy corresponding source. A missing, negative, stale, or non-zero over-age input
 faults the shadow evaluation; it is never silently replaced with 0 W.
 
 ## Export budgets
@@ -86,8 +109,9 @@ uses battery power, while GRID_TRIM receives an explicit whole-site grid target 
 It never substitutes battery residual power for a Grid Control target. The adapter emits only
 proposed settings and marks the Remote Control trigger as NOT_CALLED.
 
-Battery-power freshness is required for availability, anti-transfer feedback and zero-flow
-confirmation. A missing or stale sample resets transfer confirmation and produces UNVERIFIED,
+Battery-power own-state freshness and source health are required for availability, anti-transfer
+feedback and zero-flow confirmation. Unlike SOC and exact zero PV/grid, battery feedback receives
+no stable-value exception. A missing or stale sample resets transfer confirmation and produces UNVERIFIED,
 never READY. The existing FlowDebouncer confirms a continuously observed transfer for 10 seconds:
 a shorter event is TRANSFER_SUSPECTED and only a confirmed event becomes FAULT/RAMPING_DOWN in
 shadow diagnostics.

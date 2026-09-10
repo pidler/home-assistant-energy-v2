@@ -193,7 +193,7 @@ class ShadowControlCore:
         if transfer_allowed:
             return "CLEAR"
         samples = (telemetry.deye_battery_power, telemetry.solax_battery_power)
-        if any(sample.quality is not TelemetryQuality.VALID or not sample.fresh for sample in samples):
+        if any(sample.quality is not TelemetryQuality.VALID or not sample.effective_fresh for sample in samples):
             self.runtime_flow_debouncer = self._new_runtime_flow_debouncer()
             details = ", ".join(f"{sample.entity_id}={sample.quality.value}" for sample in samples)
             return f"UNVERIFIED: battery-power feedback is not fresh ({details})"
@@ -242,11 +242,15 @@ class ShadowControlCore:
         if invalid:
             return PvEstimate(None, TelemetryQuality.INVALID, f"Invalid PV inputs: {', '.join(invalid)}")
         stale = tuple(
-            sample.entity_id for sample in present if sample.quality is not TelemetryQuality.VALID or not sample.fresh
+            sample.entity_id
+            for sample in present
+            if sample.quality is not TelemetryQuality.VALID or not sample.effective_fresh
         )
         if stale:
             return PvEstimate(None, TelemetryQuality.STALE, f"Stale PV inputs: {', '.join(stale)}")
-        timestamps = [sample.timestamp for sample in present if sample.timestamp is not None]
+        timestamps = [
+            sample.effective_timestamp or sample.timestamp for sample in present if sample.timestamp is not None
+        ]
         skew_s = (max(timestamps) - min(timestamps)).total_seconds()
         if skew_s > self.load_parameters.maximum_timestamp_skew_s:
             return PvEstimate(None, TelemetryQuality.SKEWED, f"PV input timestamp skew is {skew_s:.1f} s")
