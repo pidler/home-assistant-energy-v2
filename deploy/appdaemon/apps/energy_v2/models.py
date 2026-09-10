@@ -96,6 +96,12 @@ class TelemetryQuality(StrEnum):
     SKEWED = "SKEWED"
 
 
+class TelemetryClass(StrEnum):
+    FAST_POWER = "FAST_POWER"
+    SLOW_STATE = "SLOW_STATE"
+    STABLE_ZERO = "STABLE_ZERO"
+
+
 @dataclass(frozen=True)
 class NumericTelemetrySample:
     value: float | None
@@ -104,6 +110,17 @@ class NumericTelemetrySample:
     fresh: bool
     quality: TelemetryQuality
     entity_id: str = ""
+    value_valid: bool = True
+    source_healthy: bool = True
+    freshness_reason: str = ""
+    effective_timestamp: datetime | None = None
+    telemetry_class: TelemetryClass = TelemetryClass.FAST_POWER
+
+    @property
+    def effective_fresh(self) -> bool:
+        """Whether the value is usable after source-health policy is applied."""
+
+        return self.fresh and self.value_valid and self.source_healthy
 
 
 @dataclass(frozen=True)
@@ -118,6 +135,10 @@ class ControlTelemetrySnapshot:
     deye_soc: NumericTelemetrySample
     solax_pv_power: NumericTelemetrySample | None = None
     deye_pv_power: NumericTelemetrySample | None = None
+    solax_source_healthy: bool = False
+    deye_source_healthy: bool = False
+    solax_source_health_reason: str = ""
+    deye_source_health_reason: str = ""
 
 
 @dataclass(frozen=True)

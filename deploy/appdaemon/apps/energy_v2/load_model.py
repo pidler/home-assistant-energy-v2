@@ -10,8 +10,7 @@ from .models import NumericTelemetrySample, TelemetryQuality
 
 @dataclass(frozen=True)
 class LoadModelParameters:
-    maximum_sample_age_s: float = 15.0
-    maximum_timestamp_skew_s: float = 5.0
+    maximum_timestamp_skew_s: float = 20.0
     negative_load_tolerance_w: float = 150.0
 
 
@@ -47,15 +46,11 @@ def estimate_whole_site_load(
     )
     if invalid:
         return LoadEstimate(None, TelemetryQuality.INVALID, f"Invalid load inputs: {', '.join(invalid)}", None)
-    stale = tuple(
-        sample.entity_id
-        for sample in samples
-        if not sample.fresh or sample.age_s is None or sample.age_s > p.maximum_sample_age_s
-    )
+    stale = tuple(sample.entity_id for sample in samples if not sample.effective_fresh)
     if stale:
         return LoadEstimate(None, TelemetryQuality.STALE, f"Stale load inputs: {', '.join(stale)}", None)
 
-    timestamps = [sample.timestamp for sample in samples if sample.timestamp is not None]
+    timestamps = [sample.effective_timestamp or sample.timestamp for sample in samples if sample.timestamp is not None]
     skew_s = (max(timestamps) - min(timestamps)).total_seconds()
     if skew_s > p.maximum_timestamp_skew_s:
         return LoadEstimate(

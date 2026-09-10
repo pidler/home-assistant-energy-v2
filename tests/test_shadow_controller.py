@@ -128,3 +128,56 @@ def test_stale_grid_measurement_faults_shadow_evaluation() -> None:
     assert result.command_status is CommandStatus.FAULT
     assert result.load.load_w is None
     assert core.trailing_tracker.samples == []
+
+
+def test_stale_battery_feedback_cannot_report_anti_transfer_clear() -> None:
+    data = telemetry()
+    stale = NumericTelemetrySample(
+        0,
+        NOW - timedelta(seconds=60),
+        60,
+        False,
+        TelemetryQuality.STALE,
+        "sensor.deye_battery_power",
+        True,
+        False,
+        "DEYE source unhealthy",
+    )
+    result = ShadowControlCore().evaluate(
+        replace(data, deye_battery_power=stale),
+        command(),
+        deye=availability(BatteryId.DEYE, measured=0),
+        solax=availability(BatteryId.SOLAX, measured=0),
+    )
+    assert result.command_status is CommandStatus.UNVERIFIED
+    assert result.runtime_anti_transfer_state.startswith("UNVERIFIED")
+
+
+def test_stale_battery_feedback_cannot_complete_zero_flow_confirmation() -> None:
+    core = ShadowControlCore()
+    core.evaluate(
+        telemetry(at=NOW, deye_battery=-1000),
+        command(),
+        deye=availability(BatteryId.DEYE, measured=-1000),
+        solax=availability(BatteryId.SOLAX, measured=0),
+    )
+    stale = NumericTelemetrySample(
+        0,
+        NOW + timedelta(seconds=20),
+        0,
+        False,
+        TelemetryQuality.STALE,
+        "sensor.deye_battery_power",
+        True,
+        False,
+        "DEYE source unhealthy",
+    )
+    result = core.evaluate(
+        replace(telemetry(at=NOW + timedelta(seconds=20)), deye_battery_power=stale),
+        command(),
+        deye=availability(BatteryId.DEYE, measured=None),
+        solax=availability(BatteryId.SOLAX, measured=0),
+    )
+    assert result.command_status is CommandStatus.UNVERIFIED
+    assert result.allocation.deye.target_power_w == 0
+    assert result.runtime_anti_transfer_state.startswith("UNVERIFIED")

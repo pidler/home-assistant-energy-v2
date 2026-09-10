@@ -50,6 +50,7 @@ from .flow import (
     validate_flow_thresholds,
     validate_system_parameters,
 )
+from .load_model import LoadModelParameters
 from .models import (
     AppStatus,
     BatteryId,
@@ -63,7 +64,14 @@ from .models import (
 from .planner import plan_shadow_mode
 from .safety import find_active_conflicts, find_missing_entities, safe_to_enable, validate_telemetry
 from .shadow_controller import ShadowControlCore
-from .telemetry import TelemetryReader, parse_bool_state, parse_float_state, parse_text_state
+from .telemetry import (
+    TelemetryFreshnessConfig,
+    TelemetryReader,
+    parse_bool_state,
+    parse_float_state,
+    parse_text_state,
+    validate_freshness_config,
+)
 
 
 class EnergyV2App(hass.Hass):
@@ -85,7 +93,12 @@ class EnergyV2App(hass.Hass):
         )
         self.conflicting_automations = tuple(self.args.get("conflicting_automations", DEFAULT_CONFLICTING_AUTOMATIONS))
         self._config_errors: tuple[str, ...] = ()
-        self.telemetry = TelemetryReader(self, self.entity_ids)
+        self.telemetry_freshness = self._telemetry_freshness_from_args()
+        freshness_errors = validate_freshness_config(self.telemetry_freshness)
+        self._config_errors = (*self._config_errors, *freshness_errors)
+        if freshness_errors:
+            self.telemetry_freshness = TelemetryFreshnessConfig()
+        self.telemetry = TelemetryReader(self, self.entity_ids, self.telemetry_freshness)
         self.sign_conventions = SignConventions(
             solax_battery_charging_positive=self._bool_arg("solax_battery_charging_positive", True),
             deye_battery_charging_positive=self._bool_arg("deye_battery_charging_positive", True),
@@ -120,6 +133,9 @@ class EnergyV2App(hass.Hass):
         self.control_tick_interval_s = float(self.args.get("shadow_control_interval_s", 5.0))
         self.shadow_site_target_w = float(self.args.get("shadow_site_target_w", 0.0))
         self.shadow_control = ShadowControlCore(
+            load_parameters=LoadModelParameters(
+                maximum_timestamp_skew_s=self.telemetry_freshness.fast_input_max_skew_s
+            ),
             allocator=ShadowPowerAllocator(
                 AllocationParameters(
                     operational_export_limit_w=self.system_parameters.target_export_limit_w,
@@ -127,7 +143,7 @@ class EnergyV2App(hass.Hass):
                     zero_flow_tolerance_w=float(self.args.get("shadow_zero_flow_tolerance_w", 300.0)),
                     zero_flow_confirmation_s=float(self.args.get("shadow_zero_flow_confirmation_s", 10.0)),
                 )
-            )
+            ),
         )
         self._debounce_handle: Any | None = None
         self._flow_tick_running = False
@@ -689,6 +705,22 @@ class EnergyV2App(hass.Hass):
             export_average_warning_w=self._float_arg("export_average_warning_w", defaults.export_average_warning_w),
             export_average_window_s=self._float_arg("export_average_window_s", defaults.export_average_window_s),
             export_sample_max_age_s=self._float_arg("export_sample_max_age_s", defaults.export_sample_max_age_s),
+        )
+
+    def _telemetry_freshness_from_args(self) -> TelemetryFreshnessConfig:
+        defaults = TelemetryFreshnessConfig()
+        return TelemetryFreshnessConfig(
+            solax_fast_power_max_age_s=self._float_arg(
+                "solax_fast_power_max_age_s", defaults.solax_fast_power_max_age_s
+            ),
+            deye_fast_power_max_age_s=self._float_arg("deye_fast_power_max_age_s", defaults.deye_fast_power_max_age_s),
+            fast_input_max_skew_s=self._float_arg("fast_input_max_skew_s", defaults.fast_input_max_skew_s),
+            solax_source_health_window_s=self._float_arg(
+                "solax_source_health_window_s", defaults.solax_source_health_window_s
+            ),
+            deye_source_health_window_s=self._float_arg(
+                "deye_source_health_window_s", defaults.deye_source_health_window_s
+            ),
         )
 
     def _flow_thresholds_from_args(self) -> FlowThresholds:

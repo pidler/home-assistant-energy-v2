@@ -19,6 +19,8 @@ Current development:
   SolaX and DEYE; DEYE uses existing `sensor.battery_power_otoceny`.
 - phase 4 adds a strictly shadow-only whole-site load model, export budgets, DEYE-first power
   allocator, anti-transfer simulation and inverter-specific diagnostic adapters.
+- phase 4 telemetry uses production-derived SolaX/DEYE freshness windows and source-health
+  inference so unchanged SOC and healthy exact-zero PV/grid states are not falsely rejected.
 - the command target remains static; no trading optimizer is implemented.
 
 Safety boundary:
