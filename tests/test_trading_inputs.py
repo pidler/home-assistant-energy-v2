@@ -7,6 +7,7 @@ import pytest
 from apps.energy_v2.trading.inputs import (
     assemble_slots,
     build_time_of_day_load_profile,
+    calculate_whole_site_load_w,
     parse_timestamped_prices,
     resample_solcast_30min_to_15min_energy,
 )
@@ -53,17 +54,25 @@ def test_solcast_resampling_preserves_energy() -> None:
     assert sum(result.values()) == pytest.approx(4 * 0.5 + 2 * 0.5)
 
 
-def test_load_profile_uses_weekday_quarter_hour_median() -> None:
+def test_load_profile_accepts_prepared_whole_site_history() -> None:
     target = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
     history = []
     for day in range(14):
         timestamp = target - timedelta(days=day + 1)
         for quarter in range(96):
             point = timestamp.replace(hour=quarter // 4, minute=(quarter % 4) * 15)
-            history.append((point, 1_000.0 if point.weekday() < 5 else 2_000.0))
+            solax_ac = 1_400.0 if point.weekday() < 5 else 2_400.0
+            deye_ac = 100.0
+            grid_export = 500.0
+            history.append((point, calculate_whole_site_load_w(solax_ac, deye_ac, grid_export)))
     profile, quality = build_time_of_day_load_profile(history, [target])
     assert quality is ForecastQuality.MEASURED_MODEL
     assert profile[target] == pytest.approx(0.25)
+
+
+def test_whole_site_load_formula_obeys_grid_export_sign() -> None:
+    assert calculate_whole_site_load_w(4_000, 2_000, 1_500) == pytest.approx(4_500)
+    assert calculate_whole_site_load_w(4_000, 2_000, -1_500) == pytest.approx(7_500)
 
 
 def test_load_profile_explicit_fallback() -> None:

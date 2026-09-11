@@ -18,7 +18,7 @@ The read-only audit on 2026-09-11 found:
 | Buy price | `sensor.current_buy_electricity_price_15min` | Timestamp-keyed 15-minute CZK/kWh values for today and D+1 |
 | Sell price | `sensor.current_sell_electricity_price_15min` | Timestamp-keyed 15-minute CZK/kWh values for today and D+1 |
 | PV | `sensor.solcast_pv_forecast_forecast_today` and `_tomorrow` | `detailedForecast`, 30-minute average kW points |
-| Load history | `sensor.solax_house_load` | Measured W; no separate forecast entity was found |
+| Whole-site load history | Prepared from SolaX AC + DEYE AC - grid | Authoritative measured W; grid is positive export, negative import |
 | DEYE SOC | `sensor.deye_battery` | Percent |
 | SolaX SOC | `sensor.solax_battery_capacity` | Percent |
 
@@ -26,9 +26,15 @@ The price parser consumes timestamp keys directly and never duplicates already-q
 all common future timestamps; it is not fixed to 96 slots. Solcast average kW points are converted to two 15-minute
 kWh values. Thus `sum(power_kw * 0.5 h)` equals the resulting 15-minute energy sum.
 
-The load adapter supports a median quarter-hour-of-day profile, split into weekday/weekend buckets. When sufficient
-history is supplied it reports `MEASURED_MODEL`. Sparse history is `SIMPLE_BASELINE`; no history uses an explicit
-configurable fallback and reports `FALLBACK`. Phase 5A does not fetch recorder history itself.
+The authoritative input is the same production-validated whole-site relationship used by Phase 4:
+
+`L_site = sensor.solax_inverter_power + sensor.deye_power - sensor.solax_measured_power`
+
+The grid convention is positive for export and negative for import. `sensor.solax_house_load` is not an authoritative
+site-load source because it does not cover the complete AC-coupled system. The load adapter accepts prepared
+whole-site history and builds a median quarter-hour-of-day profile, split into weekday/weekend buckets. When
+sufficient history is supplied it reports `MEASURED_MODEL`. Sparse history is `SIMPLE_BASELINE`; no history uses an
+explicit configurable fallback and reports `FALLBACK`. Phase 5A does not fetch recorder history itself.
 
 ## Units and signs
 
@@ -67,24 +73,31 @@ Default battery model for review:
 | --- | ---: | ---: |
 | Nominal capacity | 32 kWh | 24 kWh |
 | Minimum / maximum SOC | 10% / 100% | 10% / 100% |
-| Conservative charge/discharge power | 10 kW / 10 kW | 10 kW / 10 kW |
+| Charge/discharge power | 10 kW / 10 kW | 10 kW / 10 kW |
+| Limit status | `MODEL_ASSUMPTION` | `MODEL_ASSUMPTION` |
 | Charge/discharge efficiency | 95% / 95% | 95% / 95% |
 | Default terminal reserve | 20% | 20% |
 
-Power limits remain conservative model parameters until controlled physical capability tests establish better values.
+The 10 kW values are provisional `MODEL_ASSUMPTION` inputs, not confirmed or conservative physical limits. Charge
+and discharge limits are independently configurable for each battery. A value may be labelled
+`CONFIRMED_PHYSICAL_LIMIT` only after supporting evidence or controlled capability tests exist. The status and actual
+per-battery values are shown in the rendered plan summary.
 
 ## Terminal value
 
-For each battery, one stored kWh at the horizon edge is valued at:
+For each battery, one stored kWh at the horizon edge is valued from an estimate at that edge:
 
-`best visible sell price × discharge efficiency × terminal_value_factor`
+`median sell price in the final 3 hours × discharge efficiency × terminal_value_factor`
 
-The default factor is 0.60, with a conservative 1 CZK/kWh floor so an all-negative-price horizon cannot make the LP
-unbounded or assign nonsensical negative continuation value. A configurable terminal SOC reserve (20% by default)
-is a soft target. Missing reserve is
-penalized at 1.05 times the best visible discharge value, so the planner does not dump it merely because the horizon
-ends. Unlike a hard constraint, this remains feasible when the real initial SOC is below 20% and forecast PV cannot
-restore it. The CZK/kWh continuation value, reserve target and shortfall are all returned in `PlannerResult`.
+The edge window is configurable and an explicit continuation-price estimate may be supplied. The deterministic
+median prevents an attractive opportunity earlier in the horizon from being incorrectly treated as value available
+after the horizon. The default factor is 0.60, with a 1 CZK/kWh floor.
+
+The 20% default is explicitly a configurable **HEURISTIC SOFT RESERVE**, not a physical minimum and not an
+economically derived guarantee. The physical minimum remains 10%. Missing soft reserve is penalized from the same
+edge price estimate. Unlike a hard constraint, this remains feasible when initial SOC is below the target and PV
+cannot restore it. `PlannerResult` separately returns physical minimum SOC, soft target SOC/kWh, actual terminal
+SOC/stored kWh, and actual shortfall; it never describes an unmet target as energy actually reserved.
 
 ## Rolling re-optimization
 
@@ -100,9 +113,13 @@ The function only identifies triggers. No automatic scheduler was added.
 
 ## Explainability and manual comparison
 
-Every slot has an action and generated reason. `render_text()` emits the complete table plus significant action
-transitions; `render_json()` emits a machine-readable representation. `PlanComparison` and `compare_plans()` retain
-net values and terminal SOC trajectories for a future user-entered manual plan.
+Every slot has an action and a reason generated after solving. The context includes current SOC/stored energy,
+terminal SOC, soft target and shortfall, actual future planned battery exports, relevant prices, and forecast PV
+before that export. A higher future price alone is not enough to claim energy is being held for it.
+
+`render_text()` emits the complete table plus significant action transitions; `render_json()` emits a machine-readable
+representation. `PlanComparison` and `compare_plans()` report raw grid cashflow, terminal stored-energy difference,
+terminal-value adjustment, and comparable economic value. Both plans must use the same terminal valuation policy.
 
 Run the synthetic renderer locally with:
 

@@ -20,6 +20,11 @@ class TradingAction(StrEnum):
     IMPORT_FOR_LOAD = "IMPORT_FOR_LOAD"
 
 
+class PhysicalLimitStatus(StrEnum):
+    MODEL_ASSUMPTION = "MODEL_ASSUMPTION"
+    CONFIRMED_PHYSICAL_LIMIT = "CONFIRMED_PHYSICAL_LIMIT"
+
+
 @dataclass(frozen=True)
 class BatteryParameters:
     name: str
@@ -31,6 +36,7 @@ class BatteryParameters:
     charge_efficiency: float = 0.95
     discharge_efficiency: float = 0.95
     terminal_reserve_soc_pct: float = 20.0
+    power_limit_status: PhysicalLimitStatus = PhysicalLimitStatus.MODEL_ASSUMPTION
 
     def validate(self) -> None:
         values = (
@@ -53,6 +59,8 @@ class BatteryParameters:
             raise ValueError(f"{self.name} power limits must be non-negative")
         if not 0 < self.charge_efficiency <= 1 or not 0 < self.discharge_efficiency <= 1:
             raise ValueError(f"{self.name} efficiencies must be in (0, 1]")
+        if not isinstance(self.power_limit_status, PhysicalLimitStatus):
+            raise ValueError(f"{self.name} power limit status must be explicit")
 
 
 @dataclass(frozen=True)
@@ -91,6 +99,8 @@ class PlannerConfig:
     terminal_value_factor: float = 0.60
     terminal_value_floor_czk_per_kwh: float = 1.0
     terminal_reserve_shortfall_factor: float = 1.05
+    terminal_price_lookback_hours: float = 3.0
+    terminal_continuation_price_czk_per_kwh: float | None = None
 
     def validate(self) -> None:
         values = (
@@ -102,6 +112,7 @@ class PlannerConfig:
             self.terminal_value_factor,
             self.terminal_value_floor_czk_per_kwh,
             self.terminal_reserve_shortfall_factor,
+            self.terminal_price_lookback_hours,
         )
         if not all(isfinite(value) for value in values):
             raise ValueError("planner configuration must be finite")
@@ -119,6 +130,12 @@ class PlannerConfig:
             raise ValueError("terminal value floor must be non-negative")
         if self.terminal_reserve_shortfall_factor < 1:
             raise ValueError("terminal reserve shortfall factor must be at least one")
+        if self.terminal_price_lookback_hours <= 0:
+            raise ValueError("terminal price lookback must be positive")
+        if self.terminal_continuation_price_czk_per_kwh is not None and not isfinite(
+            self.terminal_continuation_price_czk_per_kwh
+        ):
+            raise ValueError("explicit terminal continuation price must be finite")
 
 
 @dataclass(frozen=True)
@@ -191,9 +208,17 @@ class PlannerResult:
     slots: tuple[TradingSlotPlan, ...]
     initial_soc_pct: dict[str, float]
     terminal_soc_pct: dict[str, float]
+    terminal_stored_kwh: dict[str, float]
+    minimum_physical_soc_pct: dict[str, float]
+    terminal_reserve_target_soc_pct: dict[str, float]
     terminal_value_czk_per_kwh: dict[str, float]
-    terminal_reserved_kwh: dict[str, float]
+    terminal_continuation_price_czk_per_kwh: float
+    terminal_value_method: str
+    terminal_reserve_target_kwh: dict[str, float]
     terminal_reserve_shortfall_kwh: dict[str, float]
+    max_charge_power_w: dict[str, float]
+    max_discharge_power_w: dict[str, float]
+    power_limit_status: dict[str, PhysicalLimitStatus]
     expected_export_kwh: float
     expected_import_kwh: float
     expected_revenue_czk: float
@@ -206,8 +231,17 @@ class PlannerResult:
 
 @dataclass(frozen=True)
 class PlanComparison:
-    optimizer_net_value_czk: float
-    manual_net_value_czk: float
-    difference_czk: float
+    optimizer_grid_cashflow_czk: float
+    manual_grid_cashflow_czk: float
+    grid_cashflow_difference_czk: float
+    optimizer_terminal_stored_kwh: float
+    manual_terminal_stored_kwh: float
+    terminal_stored_energy_difference_kwh: float
+    optimizer_terminal_value_adjustment_czk: float
+    manual_terminal_value_adjustment_czk: float
+    terminal_value_adjustment_difference_czk: float
+    optimizer_comparable_value_czk: float
+    manual_comparable_value_czk: float
+    comparable_value_difference_czk: float
     optimizer_terminal_soc_pct: dict[str, float]
     manual_terminal_soc_pct: dict[str, float]

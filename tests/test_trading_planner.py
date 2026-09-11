@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -147,7 +148,7 @@ def test_i_terminal_reserve_prevents_horizon_edge_dump() -> None:
     assert result.slots[-1].planned_grid_export_kwh > 0
     assert result.terminal_soc_pct["DEYE"] >= 20
     assert result.terminal_soc_pct["DEYE"] < 50
-    assert result.terminal_reserved_kwh["DEYE"] == pytest.approx(2)
+    assert result.terminal_reserve_target_kwh["DEYE"] == pytest.approx(2)
 
 
 def test_terminal_value_changes_horizon_edge_decision() -> None:
@@ -159,10 +160,27 @@ def test_terminal_value_changes_horizon_edge_decision() -> None:
     assert with_value.terminal_value_czk_per_kwh["DEYE"] == pytest.approx(95)
 
 
+def test_past_peak_does_not_inflate_terminal_continuation_value() -> None:
+    result = plan_trading_schedule(planning_input([10] + [2] * 12))
+    assert result.terminal_continuation_price_czk_per_kwh == pytest.approx(2)
+    assert result.terminal_value_czk_per_kwh["DEYE"] == pytest.approx(2 * 0.95 * 0.60)
+
+
+def test_explicit_terminal_continuation_price_is_supported() -> None:
+    result = plan_trading_schedule(
+        planning_input([10, 1]),
+        PlannerConfig(terminal_continuation_price_czk_per_kwh=3),
+    )
+    assert result.terminal_continuation_price_czk_per_kwh == pytest.approx(3)
+    assert result.terminal_value_method == "EXPLICIT_CONTINUATION_PRICE"
+
+
 def test_soft_terminal_reserve_remains_feasible_below_target() -> None:
     result = plan_trading_schedule(planning_input([5], initial_soc={"DEYE": 11}))
     assert result.terminal_soc_pct["DEYE"] == pytest.approx(11)
     assert result.terminal_reserve_shortfall_kwh["DEYE"] == pytest.approx(0.9)
+    assert "reserve protected" not in result.slots[0].reason
+    assert "shortfall 0.90 kWh" in result.slots[0].reason
 
 
 def test_j_d_plus_one_replan_changes_today_decision() -> None:
@@ -170,7 +188,23 @@ def test_j_d_plus_one_replan_changes_today_decision() -> None:
     with_d_plus_one = plan_trading_schedule(planning_input([4, 1, 6, 6, 6, 6, 1]))
     assert today_only.slots[0].action is TradingAction.EXPORT
     assert with_d_plus_one.slots[0].action is TradingAction.HOLD
-    assert "later peak" in with_d_plus_one.slots[0].reason
+    assert "solved plan" in with_d_plus_one.slots[0].reason.lower()
+    assert "later exports" in with_d_plus_one.slots[0].reason
+
+
+def test_higher_future_price_without_planned_export_is_not_claimed_as_reserved() -> None:
+    result = plan_trading_schedule(planning_input([1, 10], initial_soc={"DEYE": 10}))
+    assert result.slots[0].action is TradingAction.HOLD
+    assert "held for" not in result.slots[0].reason.lower()
+    assert "no battery export" in result.slots[0].reason.lower()
+
+
+def test_actual_future_battery_export_can_explain_hold_for_later_price() -> None:
+    item = battery(reserve=10)
+    result = plan_trading_schedule(planning_input([1, 8], batteries=(item,), initial_soc={"DEYE": 50}))
+    assert result.slots[0].action is TradingAction.HOLD
+    assert result.slots[1].batteries["DEYE"].discharge_to_export_kwh > 0
+    assert "later exports" in result.slots[0].reason
 
 
 def test_deye_is_preferred_only_as_tie_break() -> None:
@@ -213,19 +247,49 @@ def test_renderer_contains_summary_table_reasons_and_json() -> None:
     rendered_json = render_json(result)
     assert "Expected net grid value" in text
     assert "IMPORTANT DECISIONS" in text
-    assert "Energy deliberately reserved for future" in text
+    assert "HEURISTIC SOFT RESERVE" in text
+    assert "physical minimum 10.0%" in text
+    assert "MODEL_ASSUMPTION" in text
     assert "DEYE SOC" in text
     assert '"expected_export_kwh"' in rendered_json
 
 
 def test_manual_plan_comparison_data_model() -> None:
-    optimizer = plan_trading_schedule(planning_input([1, 5]))
-    manual = plan_trading_schedule(planning_input([1, 4]))
-    comparison = compare_plans(optimizer, manual)
-    assert comparison.difference_czk == pytest.approx(
-        optimizer.expected_net_grid_value_czk - manual.expected_net_grid_value_czk
+    optimizer = plan_trading_schedule(planning_input([2] * 12))
+    manual = replace(
+        optimizer,
+        expected_net_grid_value_czk=optimizer.expected_net_grid_value_czk + 1,
+        terminal_stored_kwh={"DEYE": 1},
+        terminal_soc_pct={"DEYE": 10},
     )
+    comparison = compare_plans(optimizer, manual)
+    assert comparison.grid_cashflow_difference_czk == pytest.approx(-1)
+    assert comparison.terminal_stored_energy_difference_kwh > 0
+    assert comparison.terminal_value_adjustment_difference_czk > 1
+    assert comparison.comparable_value_difference_czk > 0
     assert comparison.optimizer_terminal_soc_pct == optimizer.terminal_soc_pct
+
+
+def test_plan_comparison_requires_same_terminal_valuation_policy() -> None:
+    optimizer = plan_trading_schedule(planning_input([2] * 12))
+    manual = replace(optimizer, terminal_value_czk_per_kwh={"DEYE": 99})
+    with pytest.raises(ValueError, match="same terminal valuation"):
+        compare_plans(optimizer, manual)
+
+
+def test_tomorrow_peak_inside_horizon_is_scheduled_not_terminal_artifact() -> None:
+    prices = [3] * 8 + [9] * 4 + [1] * 12
+    result = plan_trading_schedule(planning_input(prices, initial_soc={"DEYE": 60}))
+    assert sum(slot.batteries["DEYE"].discharge_to_export_kwh for slot in result.slots[8:12]) > 0
+    assert result.terminal_continuation_price_czk_per_kwh == pytest.approx(1)
+
+
+def test_weak_horizon_edge_keeps_only_soft_target_not_old_peak_value() -> None:
+    result = plan_trading_schedule(planning_input([10] + [1] * 16, initial_soc={"DEYE": 80}))
+    assert result.slots[0].batteries["DEYE"].discharge_to_export_kwh > 0
+    assert result.terminal_value_czk_per_kwh["DEYE"] == pytest.approx(1)
+    assert sum(slot.planned_grid_export_kwh for slot in result.slots[1:]) == pytest.approx(0)
+    assert result.terminal_soc_pct["DEYE"] < 80
 
 
 def test_sign_convention_charge_positive_discharge_negative() -> None:

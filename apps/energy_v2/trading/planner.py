@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pulp
 
-from .explanation import explain_slot, price_percentile
+from .explanation import ExplanationContext, explain_slot, price_percentile
 from .models import (
     BatterySlotPlan,
     ImportantDecision,
@@ -15,7 +16,7 @@ from .models import (
     TradingAction,
     TradingSlotPlan,
 )
-from .objective import terminal_reserve_shortfall_costs, terminal_values
+from .objective import continuation_price, terminal_reserve_shortfall_costs, terminal_values
 
 _EPSILON_KWH = 1e-5
 
@@ -110,6 +111,12 @@ def plan_trading_schedule(data: PlannerInput, config: PlannerConfig | None = Non
         raise RuntimeError(f"trading planner did not find an optimal solution: {pulp.LpStatus[status]}")
 
     prices = tuple(slot.sell_price_czk_per_kwh for slot in data.slots)
+    terminal_stored = {name: _value(stored[name][len(data.slots)]) for name in names}
+    terminal_soc = {name: 100 * terminal_stored[name] / battery.capacity_kwh for name, battery in batteries.items()}
+    terminal_shortfall = {name: _value(reserve_shortfall[name]) for name in names}
+    reserve_targets = {
+        name: battery.capacity_kwh * battery.terminal_reserve_soc_pct / 100 for name, battery in batteries.items()
+    }
     planned_slots: list[TradingSlotPlan] = []
     for index, slot in enumerate(data.slots):
         battery_plans: dict[str, BatterySlotPlan] = {}
@@ -139,15 +146,6 @@ def plan_trading_schedule(data: PlannerInput, config: PlannerConfig | None = Non
             action = TradingAction.IMPORT_FOR_LOAD
         else:
             action = TradingAction.HOLD
-        later_prices = prices[index + 1 :]
-        future_peak = max(later_prices) if later_prices else None
-        reason = explain_slot(
-            slot,
-            action=action,
-            battery_export_kwh=total_battery_export,
-            future_peak=future_peak,
-            price_percentile=price_percentile(prices, slot.sell_price_czk_per_kwh),
-        )
         planned_slots.append(
             TradingSlotPlan(
                 timestamp=slot.timestamp,
@@ -159,20 +157,63 @@ def plan_trading_schedule(data: PlannerInput, config: PlannerConfig | None = Non
                 planned_grid_export_kwh=export_kwh,
                 batteries=battery_plans,
                 action=action,
-                reason=reason,
+                reason="",
             )
+        )
+
+    for index, planned in enumerate(planned_slots):
+        future_indexes = [
+            future_index
+            for future_index in range(index + 1, len(planned_slots))
+            if sum(battery.discharge_to_export_kwh for battery in planned_slots[future_index].batteries.values())
+            > _EPSILON_KWH
+        ]
+        future_export_index = (
+            max(future_indexes, key=lambda item: planned_slots[item].sell_price_czk_per_kwh) if future_indexes else None
+        )
+        future_export_kwh = sum(
+            sum(battery.discharge_to_export_kwh for battery in planned_slots[item].batteries.values())
+            for item in future_indexes
+        )
+        current_stored = {
+            name: (
+                batteries[name].capacity_kwh * data.initial_soc_pct[name] / 100
+                if index == 0
+                else batteries[name].capacity_kwh * planned_slots[index - 1].batteries[name].projected_soc_pct / 100
+            )
+            for name in names
+        }
+        context = ExplanationContext(
+            current_soc_pct={name: 100 * current_stored[name] / batteries[name].capacity_kwh for name in names},
+            current_stored_kwh=current_stored,
+            terminal_soc_pct=terminal_soc,
+            terminal_reserve_target_kwh=reserve_targets,
+            terminal_reserve_shortfall_kwh=terminal_shortfall,
+            future_planned_battery_export_kwh=future_export_kwh,
+            future_export_price_czk_per_kwh=(
+                planned_slots[future_export_index].sell_price_czk_per_kwh if future_export_index is not None else None
+            ),
+            pv_before_future_export_kwh=(
+                sum(data.slots[item].pv_forecast_kwh for item in range(index + 1, future_export_index + 1))
+                if future_export_index is not None
+                else 0.0
+            ),
+        )
+        battery_export_kwh = sum(battery.discharge_to_export_kwh for battery in planned.batteries.values())
+        planned_slots[index] = replace(
+            planned,
+            reason=explain_slot(
+                data.slots[index],
+                action=planned.action,
+                battery_export_kwh=battery_export_kwh,
+                price_percentile=price_percentile(prices, planned.sell_price_czk_per_kwh),
+                context=context,
+            ),
         )
 
     revenue_value = sum(slot.planned_grid_export_kwh * slot.sell_price_czk_per_kwh for slot in planned_slots)
     import_cost_value = sum(slot.planned_grid_import_kwh * slot.buy_price_czk_per_kwh for slot in planned_slots)
     decisions = _important_decisions(planned_slots)
-    terminal_soc = {
-        name: 100 * _value(stored[name][len(data.slots)]) / battery.capacity_kwh for name, battery in batteries.items()
-    }
-    terminal_shortfall = {name: _value(reserve_shortfall[name]) for name in names}
-    reserves = {
-        name: battery.capacity_kwh * battery.terminal_reserve_soc_pct / 100 for name, battery in batteries.items()
-    }
     generated_at = data.generated_at or datetime.now(UTC)
     return PlannerResult(
         generated_at=generated_at,
@@ -181,9 +222,21 @@ def plan_trading_schedule(data: PlannerInput, config: PlannerConfig | None = Non
         slots=tuple(planned_slots),
         initial_soc_pct=dict(data.initial_soc_pct),
         terminal_soc_pct=terminal_soc,
+        terminal_stored_kwh=terminal_stored,
+        minimum_physical_soc_pct={name: battery.minimum_soc_pct for name, battery in batteries.items()},
+        terminal_reserve_target_soc_pct={name: battery.terminal_reserve_soc_pct for name, battery in batteries.items()},
         terminal_value_czk_per_kwh=continuation_values,
-        terminal_reserved_kwh=reserves,
+        terminal_continuation_price_czk_per_kwh=continuation_price(data.slots, config),
+        terminal_value_method=(
+            "EXPLICIT_CONTINUATION_PRICE"
+            if config.terminal_continuation_price_czk_per_kwh is not None
+            else f"MEDIAN_FINAL_{config.terminal_price_lookback_hours:g}_HOURS"
+        ),
+        terminal_reserve_target_kwh=reserve_targets,
         terminal_reserve_shortfall_kwh=terminal_shortfall,
+        max_charge_power_w={name: battery.max_charge_power_w for name, battery in batteries.items()},
+        max_discharge_power_w={name: battery.max_discharge_power_w for name, battery in batteries.items()},
+        power_limit_status={name: battery.power_limit_status for name, battery in batteries.items()},
         expected_export_kwh=sum(slot.planned_grid_export_kwh for slot in planned_slots),
         expected_import_kwh=sum(slot.planned_grid_import_kwh for slot in planned_slots),
         expected_revenue_czk=revenue_value,
@@ -196,10 +249,37 @@ def plan_trading_schedule(data: PlannerInput, config: PlannerConfig | None = Non
 
 
 def compare_plans(optimizer: PlannerResult, manual: PlannerResult) -> PlanComparison:
+    if (
+        optimizer.terminal_value_method != manual.terminal_value_method
+        or optimizer.terminal_value_czk_per_kwh != manual.terminal_value_czk_per_kwh
+        or optimizer.terminal_stored_kwh.keys() != manual.terminal_stored_kwh.keys()
+    ):
+        raise ValueError("plans must use the same terminal valuation policy")
+    optimizer_terminal_kwh = sum(optimizer.terminal_stored_kwh.values())
+    manual_terminal_kwh = sum(manual.terminal_stored_kwh.values())
+    optimizer_terminal_value = sum(
+        optimizer.terminal_stored_kwh[name] * optimizer.terminal_value_czk_per_kwh[name]
+        for name in optimizer.terminal_stored_kwh
+    )
+    manual_terminal_value = sum(
+        manual.terminal_stored_kwh[name] * optimizer.terminal_value_czk_per_kwh[name]
+        for name in manual.terminal_stored_kwh
+    )
+    optimizer_comparable = optimizer.expected_net_grid_value_czk + optimizer_terminal_value
+    manual_comparable = manual.expected_net_grid_value_czk + manual_terminal_value
     return PlanComparison(
-        optimizer_net_value_czk=optimizer.expected_net_grid_value_czk,
-        manual_net_value_czk=manual.expected_net_grid_value_czk,
-        difference_czk=optimizer.expected_net_grid_value_czk - manual.expected_net_grid_value_czk,
+        optimizer_grid_cashflow_czk=optimizer.expected_net_grid_value_czk,
+        manual_grid_cashflow_czk=manual.expected_net_grid_value_czk,
+        grid_cashflow_difference_czk=optimizer.expected_net_grid_value_czk - manual.expected_net_grid_value_czk,
+        optimizer_terminal_stored_kwh=optimizer_terminal_kwh,
+        manual_terminal_stored_kwh=manual_terminal_kwh,
+        terminal_stored_energy_difference_kwh=optimizer_terminal_kwh - manual_terminal_kwh,
+        optimizer_terminal_value_adjustment_czk=optimizer_terminal_value,
+        manual_terminal_value_adjustment_czk=manual_terminal_value,
+        terminal_value_adjustment_difference_czk=optimizer_terminal_value - manual_terminal_value,
+        optimizer_comparable_value_czk=optimizer_comparable,
+        manual_comparable_value_czk=manual_comparable,
+        comparable_value_difference_czk=optimizer_comparable - manual_comparable,
         optimizer_terminal_soc_pct=optimizer.terminal_soc_pct,
         manual_terminal_soc_pct=manual.terminal_soc_pct,
     )

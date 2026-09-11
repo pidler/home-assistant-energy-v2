@@ -9,6 +9,12 @@ from typing import Any
 from .models import ForecastQuality, TradingSlotInput
 
 
+def calculate_whole_site_load_w(solax_inverter_power_w: float, deye_power_w: float, grid_power_w: float) -> float:
+    """Return authoritative whole-site load; grid is positive export."""
+
+    return solax_inverter_power_w + deye_power_w - grid_power_w
+
+
 def assemble_slots(
     buy_prices: dict[datetime, float],
     sell_prices: dict[datetime, float],
@@ -80,7 +86,7 @@ def build_time_of_day_load_profile(
     *,
     fallback_power_w: float = 500.0,
 ) -> tuple[dict[datetime, float], ForecastQuality]:
-    """Build a weekday/weekend quarter-hour median load forecast in kWh."""
+    """Build a load forecast from prepared authoritative whole-site history."""
 
     buckets: dict[tuple[bool, int, int], list[float]] = defaultdict(list)
     for timestamp, power_w in history:

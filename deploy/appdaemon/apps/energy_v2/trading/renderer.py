@@ -17,15 +17,21 @@ def render_text(result: PlannerResult) -> str:
         f"Expected net grid value: {result.expected_net_grid_value_czk:.2f} CZK",
         f"Economic objective including terminal value/penalties: {result.objective_value_czk:.2f} CZK",
         f"Load forecast quality: {result.load_forecast_quality.value}",
-        f"Energy deliberately reserved for future: {sum(result.terminal_reserved_kwh.values()):.2f} kWh target",
-        "Why: preserve continuation value beyond the visible horizon and avoid horizon-edge battery dumping",
+        f"Terminal continuation estimate: {result.terminal_continuation_price_czk_per_kwh:.2f} CZK/kWh "
+        f"({result.terminal_value_method})",
+        "Terminal reserve classification: HEURISTIC SOFT RESERVE (not a physical minimum or guaranteed result)",
     ]
     for name in names:
         lines.append(
-            f"{name} SOC: {result.initial_soc_pct[name]:.1f}% -> {result.terminal_soc_pct[name]:.1f}%; "
-            f"terminal reserve {result.terminal_reserved_kwh[name]:.2f} kWh valued at "
+            f"{name} SOC: {result.initial_soc_pct[name]:.1f}% -> actual terminal "
+            f"{result.terminal_soc_pct[name]:.1f}%; physical minimum {result.minimum_physical_soc_pct[name]:.1f}%; "
+            f"HEURISTIC SOFT RESERVE target {result.terminal_reserve_target_soc_pct[name]:.1f}% / "
+            f"{result.terminal_reserve_target_kwh[name]:.2f} kWh; actual stored "
+            f"{result.terminal_stored_kwh[name]:.2f} kWh valued at "
             f"{result.terminal_value_czk_per_kwh[name]:.2f} CZK/kWh; "
-            f"reserve shortfall {result.terminal_reserve_shortfall_kwh[name]:.2f} kWh"
+            f"actual reserve shortfall {result.terminal_reserve_shortfall_kwh[name]:.2f} kWh; "
+            f"charge/discharge limits {result.max_charge_power_w[name]:.0f}/"
+            f"{result.max_discharge_power_w[name]:.0f} W ({result.power_limit_status[name].value})"
         )
     header = [
         "TIME",
