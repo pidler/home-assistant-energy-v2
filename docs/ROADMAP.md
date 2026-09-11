@@ -1,5 +1,14 @@
 # ENERGY V2 roadmap
 
+## Phase 5A - trading planner shadow
+
+Status: implemented on a feature branch for human review; not deployed or connected to Phase 4.
+
+- 15-minute rolling LP schedule with two battery SOC trajectories,
+- summer no-grid-charge constraint and 9.8 kW hard whole-site export cap,
+- terminal reserve/value, anti-churn cost, explanations and text/JSON rendering,
+- production input audit and pure input adapters without runtime data fetching.
+
 ## Phase 1 - passive shadow controller
 
 Status: complete and merged to `main`.

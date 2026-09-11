@@ -1,0 +1,4 @@
+pytest==8.4.2
+ruff==0.13.2
+PyYAML==6.0.3
+PuLP==3.2.2

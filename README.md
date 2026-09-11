@@ -21,7 +21,8 @@ Current development:
   allocator, anti-transfer simulation and inverter-specific diagnostic adapters.
 - phase 4 telemetry uses production-derived SolaX/DEYE freshness windows and source-health
   inference so unchanged SOC and healthy exact-zero PV/grid states are not falsely rejected.
-- the command target remains static; no trading optimizer is implemented.
+- phase 5A adds an isolated, computation-only 15-minute LP trading planner with terminal value,
+  rolling-replan triggers and human-readable reasons; it is not scheduled or deployed.
 
 Safety boundary:
 
@@ -31,6 +32,9 @@ Safety boundary:
 - ledger helpers are not written,
 - legacy `energy_trading_*` entities and automations are not changed by this project phase.
 - the repository change does not update the already deployed production dashboard.
+
+See [`docs/phase-5a-trading-planner-shadow.md`](docs/phase-5a-trading-planner-shadow.md) for the
+planner's units, audited inputs, constraints and safety boundary.
 
 Confirmed phase 2 export parameters:
 
