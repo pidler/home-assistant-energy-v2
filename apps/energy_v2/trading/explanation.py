@@ -17,7 +17,7 @@ def explain_slot(
     if action is TradingAction.EXPORT:
         source = "battery/PV energy" if battery_export_kwh > 1e-6 else "PV surplus"
         return (
-            f"Export {source}; price is at the {price_percentile:.0f}th percentile of the visible horizon "
+            f"Export {source}; price is at percentile {price_percentile:.0f} of the visible horizon "
             "and terminal reserves remain protected"
         )
     if action is TradingAction.IMPORT_FOR_LOAD:
