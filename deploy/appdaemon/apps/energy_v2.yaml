@@ -25,6 +25,7 @@ energy_v2:
   solax_fast_power_max_age_s: 60
   deye_fast_power_max_age_s: 30
   fast_input_max_skew_s: 20
+  fast_input_coherence_jitter_s: 5
   solax_source_health_window_s: 60
   deye_source_health_window_s: 30
   flow_thresholds:

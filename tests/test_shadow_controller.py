@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from apps.energy_v2.allocator import AllocationParameters, BatteryAvailability, ShadowPowerAllocator
+from apps.energy_v2.load_model import LoadModelParameters
 from apps.energy_v2.models import (
     BatteryId,
     CommandStatus,
@@ -105,6 +106,34 @@ def test_total_pv_combines_validated_solax_and_deye_inputs() -> None:
     )
     assert result.total_pv_power_w == 5500
     assert result.pv_quality is TelemetryQuality.VALID
+
+
+def test_total_pv_coherence_jitter_accepts_exact_boundary() -> None:
+    data = telemetry(solax_pv=4000, deye_pv=1500)
+    data = replace(
+        data,
+        solax_pv_power=sample(4000, "sensor.solax_pv_power", at=NOW - timedelta(seconds=25)),
+        deye_pv_power=sample(1500, "sensor.deye_pv_power", at=NOW),
+    )
+    core = ShadowControlCore(load_parameters=LoadModelParameters(20, 5))
+
+    result = core.evaluate(data, command(), deye=availability(BatteryId.DEYE), solax=availability(BatteryId.SOLAX))
+
+    assert result.pv_quality is TelemetryQuality.VALID
+
+
+def test_total_pv_coherence_jitter_rejects_above_boundary() -> None:
+    data = telemetry(solax_pv=4000, deye_pv=1500)
+    data = replace(
+        data,
+        solax_pv_power=sample(4000, "sensor.solax_pv_power", at=NOW - timedelta(seconds=25.1)),
+        deye_pv_power=sample(1500, "sensor.deye_pv_power", at=NOW),
+    )
+    core = ShadowControlCore(load_parameters=LoadModelParameters(20, 5))
+
+    result = core.evaluate(data, command(), deye=availability(BatteryId.DEYE), solax=availability(BatteryId.SOLAX))
+
+    assert result.pv_quality is TelemetryQuality.SKEWED
 
 
 def test_stale_grid_measurement_faults_shadow_evaluation() -> None:

@@ -11,7 +11,27 @@ from .models import NumericTelemetrySample, TelemetryQuality
 @dataclass(frozen=True)
 class LoadModelParameters:
     maximum_timestamp_skew_s: float = 20.0
+    coherence_jitter_s: float = 5.0
     negative_load_tolerance_w: float = 150.0
+
+    @property
+    def allowed_timestamp_skew_s(self) -> float:
+        """Return semantic skew plus the bounded scheduling/update allowance."""
+
+        return self.maximum_timestamp_skew_s + self.coherence_jitter_s
+
+
+def validate_load_model_parameters(parameters: LoadModelParameters) -> tuple[str, ...]:
+    """Validate coherence independently from per-source freshness policy."""
+
+    errors: list[str] = []
+    if not isfinite(parameters.maximum_timestamp_skew_s) or parameters.maximum_timestamp_skew_s <= 0:
+        errors.append("maximum_timestamp_skew_s must be finite and greater than zero")
+    if not isfinite(parameters.coherence_jitter_s) or parameters.coherence_jitter_s < 0:
+        errors.append("coherence_jitter_s must be finite and non-negative")
+    if not isfinite(parameters.negative_load_tolerance_w) or parameters.negative_load_tolerance_w < 0:
+        errors.append("negative_load_tolerance_w must be finite and non-negative")
+    return tuple(errors)
 
 
 @dataclass(frozen=True)
@@ -46,17 +66,23 @@ def estimate_whole_site_load(
     )
     if invalid:
         return LoadEstimate(None, TelemetryQuality.INVALID, f"Invalid load inputs: {', '.join(invalid)}", None)
-    stale = tuple(sample.entity_id for sample in samples if not sample.effective_fresh)
+    stale = tuple(
+        sample.entity_id
+        for sample in samples
+        if sample.quality is not TelemetryQuality.VALID or not sample.effective_fresh
+    )
     if stale:
         return LoadEstimate(None, TelemetryQuality.STALE, f"Stale load inputs: {', '.join(stale)}", None)
 
     timestamps = [sample.effective_timestamp or sample.timestamp for sample in samples if sample.timestamp is not None]
     skew_s = (max(timestamps) - min(timestamps)).total_seconds()
-    if skew_s > p.maximum_timestamp_skew_s:
+    allowed_skew_s = p.allowed_timestamp_skew_s
+    if skew_s > allowed_skew_s:
         return LoadEstimate(
             None,
             TelemetryQuality.SKEWED,
-            f"Load input timestamp skew {skew_s:.1f} s exceeds {p.maximum_timestamp_skew_s:.1f} s",
+            f"Load input timestamp skew {skew_s:.1f} s exceeds {allowed_skew_s:.1f} s "
+            f"({p.maximum_timestamp_skew_s:.1f} s base + {p.coherence_jitter_s:.1f} s jitter)",
             skew_s,
         )
 

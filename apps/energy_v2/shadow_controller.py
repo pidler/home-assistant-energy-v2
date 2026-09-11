@@ -252,8 +252,13 @@ class ShadowControlCore:
             sample.effective_timestamp or sample.timestamp for sample in present if sample.timestamp is not None
         ]
         skew_s = (max(timestamps) - min(timestamps)).total_seconds()
-        if skew_s > self.load_parameters.maximum_timestamp_skew_s:
-            return PvEstimate(None, TelemetryQuality.SKEWED, f"PV input timestamp skew is {skew_s:.1f} s")
+        allowed_skew_s = self.load_parameters.allowed_timestamp_skew_s
+        if skew_s > allowed_skew_s:
+            return PvEstimate(
+                None,
+                TelemetryQuality.SKEWED,
+                f"PV input timestamp skew {skew_s:.1f} s exceeds {allowed_skew_s:.1f} s",
+            )
         return PvEstimate(
             sum(sample.value for sample in present if sample.value is not None),
             TelemetryQuality.VALID,

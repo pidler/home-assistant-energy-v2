@@ -24,6 +24,10 @@ class StubHass:
         self.timers: list[tuple[str, int | str]] = []
         self.run_every_callbacks: list[tuple[object, int]] = []
         self.turned_off: list[str] = []
+        self.active_timers: set[object] = set()
+        self.cancelled_timers: list[object] = []
+        self.cancelled_timer_silent: list[bool] = []
+        self.run_in_callbacks: dict[object, object] = {}
 
     def get_state(self, entity_id: str, **kwargs: Any) -> Any:
         value = self.states.get(entity_id)
@@ -67,10 +71,19 @@ class StubHass:
 
     def run_in(self, callback: object, delay: int) -> tuple[str, int]:
         self.timers.append(("in", delay))
-        return ("in", delay)
+        handle = ("in", len(self.timers))
+        self.active_timers.add(handle)
+        self.run_in_callbacks[handle] = callback
+        return handle
 
-    def cancel_timer(self, handle: object) -> None:
+    def timer_running(self, handle: object) -> bool:
+        return handle in self.active_timers
+
+    def cancel_timer(self, handle: object, silent: bool = False) -> None:
         self.timers.append(("cancel", 0))
+        self.cancelled_timers.append(handle)
+        self.cancelled_timer_silent.append(silent)
+        self.active_timers.discard(handle)
 
     def log(self, message: str, *args: Any, level: str = "INFO") -> None:
         self.logs.append((level, message % args if args else message))
@@ -251,6 +264,7 @@ def test_phase4_freshness_windows_are_configurable_from_appdaemon_args() -> None
             "fast_input_max_skew_s": 25,
             "solax_source_health_window_s": 75,
             "deye_source_health_window_s": 40,
+            "fast_input_coherence_jitter_s": 4,
         }
     )
     app.states = valid_states()
@@ -259,8 +273,77 @@ def test_phase4_freshness_windows_are_configurable_from_appdaemon_args() -> None
     assert app.telemetry_freshness.solax_fast_power_max_age_s == 70
     assert app.telemetry_freshness.deye_fast_power_max_age_s == 35
     assert app.shadow_control.load_parameters.maximum_timestamp_skew_s == 25
+    assert app.shadow_control.load_parameters.coherence_jitter_s == 4
     assert app.telemetry_freshness.solax_source_health_window_s == 75
     assert app.telemetry_freshness.deye_source_health_window_s == 40
+
+
+def test_active_debounce_timer_is_cancelled_exactly_once() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+
+    app._schedule_shadow_tick("sensor.test", "state", "old", "new", {})
+    first_handle = app._debounce_handle
+    app._schedule_shadow_tick("sensor.test", "state", "old", "new", {})
+
+    assert app.cancelled_timers == [first_handle]
+    assert app.cancelled_timer_silent == [True]
+    assert app._debounce_handle != first_handle
+
+
+def test_expired_debounce_timer_is_not_cancelled() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+
+    app._schedule_shadow_tick("sensor.test", "state", "old", "new", {})
+    expired_handle = app._debounce_handle
+    app.active_timers.discard(expired_handle)
+    app._schedule_shadow_tick("sensor.test", "state", "old", "new", {})
+
+    assert expired_handle not in app.cancelled_timers
+
+
+def test_missing_debounce_timer_cleanup_is_safe() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+
+    app._debounce_handle = None
+    app._cancel_debounce_timer()
+
+    assert app.cancelled_timers == []
+
+
+def test_debounce_timer_cleanup_is_idempotent() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+
+    app._schedule_shadow_tick("sensor.test", "state", "old", "new", {})
+    handle = app._debounce_handle
+    app._cancel_debounce_timer()
+    app._cancel_debounce_timer()
+
+    assert app.cancelled_timers == [handle]
+
+
+def test_periodic_shadow_tick_does_not_drop_pending_debounce_handle() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    app._schedule_shadow_tick("sensor.test", "state", "old", "new", {})
+    pending_handle = app._debounce_handle
+
+    app._shadow_tick()
+
+    assert app._debounce_handle == pending_handle
 
 
 def test_stubbed_appdaemon_import_matches_appdaemon_module_config() -> None:

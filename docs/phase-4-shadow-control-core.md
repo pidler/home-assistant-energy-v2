@@ -46,8 +46,24 @@ Production-derived defaults are configurable in AppDaemon:
 - `solax_fast_power_max_age_s`: 60 s,
 - `deye_fast_power_max_age_s`: 30 s,
 - `fast_input_max_skew_s`: 20 s,
+- `fast_input_coherence_jitter_s`: 5 s,
 - `solax_source_health_window_s`: 60 s,
 - `deye_source_health_window_s`: 30 s.
+
+Cross-source coherence keeps the 20-second semantic skew separate from a bounded 5-second
+scheduling/update allowance. The production SolaX and DEYE integrations naturally update at
+approximately 15-second and 5-second cadences; Home Assistant state ordering and scheduler jitter
+can therefore produce a healthy effective-timestamp difference just above 20 seconds. Coherence
+accepts `skew <= base + jitter` (25 seconds with the defaults) and rejects `skew > base + jitter`.
+The allowance is evaluated only after every compared sample is finite, `VALID`, effectively fresh,
+and backed by a healthy source. It cannot promote a stale sample, extend battery freshness, extend
+a source-health window, or accept an old non-zero grid/PV value.
+
+The production replay that motivated this policy used SolaX/grid effective evidence at
+`07:59:09.076867Z` and DEYE AC evidence at `07:59:29.094199Z`: an exact 20.017332-second skew that
+was formatted as 20.0 seconds but rejected by the old 20-second boundary. A later 25.024222-second
+gap remains deliberately rejected by the new policy; the jitter allowance is bounded, not a
+freshness extension.
 
 When an old SOC or stable-zero state is accepted, its effective timestamp is the timestamp of the
 fast signal that proved source health. This prevents a legitimate unchanged state from creating
@@ -125,6 +141,13 @@ shadow diagnostics.
   layer rather than duplicating Phase 3 correction logic.
 
 Phase 3 continues to run independently in shadow mode during this development phase.
+
+State-triggered planner evaluation uses one debounced AppDaemon timer. Cleanup first clears the
+stored handle and calls `cancel_timer(..., silent=True)` only when `timer_running()` confirms that
+the handle is still active. Silent cancellation also closes the narrow race where a timer expires
+between those two AppDaemon calls. The debounce callback clears its own handle; the periodic tick no
+longer discards a pending debounce handle. Missing, expired, or repeatedly cleaned handles are
+therefore harmless and do not generate AppDaemon invalid-callback warnings.
 
 ## Safety boundary
 

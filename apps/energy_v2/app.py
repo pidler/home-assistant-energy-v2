@@ -50,7 +50,7 @@ from .flow import (
     validate_flow_thresholds,
     validate_system_parameters,
 )
-from .load_model import LoadModelParameters
+from .load_model import LoadModelParameters, validate_load_model_parameters
 from .models import (
     AppStatus,
     BatteryId,
@@ -98,6 +98,16 @@ class EnergyV2App(hass.Hass):
         self._config_errors = (*self._config_errors, *freshness_errors)
         if freshness_errors:
             self.telemetry_freshness = TelemetryFreshnessConfig()
+        self.load_parameters = LoadModelParameters(
+            maximum_timestamp_skew_s=self.telemetry_freshness.fast_input_max_skew_s,
+            coherence_jitter_s=self._float_arg("fast_input_coherence_jitter_s", 5.0),
+        )
+        load_model_errors = validate_load_model_parameters(self.load_parameters)
+        self._config_errors = (*self._config_errors, *load_model_errors)
+        if load_model_errors:
+            self.load_parameters = LoadModelParameters(
+                maximum_timestamp_skew_s=self.telemetry_freshness.fast_input_max_skew_s
+            )
         self.telemetry = TelemetryReader(self, self.entity_ids, self.telemetry_freshness)
         self.sign_conventions = SignConventions(
             solax_battery_charging_positive=self._bool_arg("solax_battery_charging_positive", True),
@@ -133,9 +143,7 @@ class EnergyV2App(hass.Hass):
         self.control_tick_interval_s = float(self.args.get("shadow_control_interval_s", 5.0))
         self.shadow_site_target_w = float(self.args.get("shadow_site_target_w", 0.0))
         self.shadow_control = ShadowControlCore(
-            load_parameters=LoadModelParameters(
-                maximum_timestamp_skew_s=self.telemetry_freshness.fast_input_max_skew_s
-            ),
+            load_parameters=self.load_parameters,
             allocator=ShadowPowerAllocator(
                 AllocationParameters(
                     operational_export_limit_w=self.system_parameters.target_export_limit_w,
@@ -202,12 +210,20 @@ class EnergyV2App(hass.Hass):
             self.listen_state(self._physical_actuator_changed, entity_id)
 
     def _schedule_shadow_tick(self, entity: str, attribute: str, old: Any, new: Any, kwargs: dict[str, Any]) -> None:
-        if self._debounce_handle is not None:
-            self.cancel_timer(self._debounce_handle)
-        self._debounce_handle = self.run_in(self._shadow_tick, 3)
+        self._cancel_debounce_timer()
+        self._debounce_handle = self.run_in(self._debounced_shadow_tick, 3)
+
+    def _cancel_debounce_timer(self) -> None:
+        handle = self._debounce_handle
+        self._debounce_handle = None
+        if handle is not None and self.timer_running(handle):
+            self.cancel_timer(handle, silent=True)
+
+    def _debounced_shadow_tick(self, kwargs: dict[str, Any] | None = None) -> None:
+        self._debounce_handle = None
+        self._shadow_tick(kwargs)
 
     def _shadow_tick(self, kwargs: dict[str, Any] | None = None) -> None:
-        self._debounce_handle = None
         if self._shadow_tick_running:
             self._warning("skipping overlapping shadow planner tick")
             return
