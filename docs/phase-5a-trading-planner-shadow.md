@@ -84,6 +84,23 @@ and discharge limits are independently configurable for each battery. A value ma
 `CONFIRMED_PHYSICAL_LIMIT` only after supporting evidence or controlled capability tests exist. The status and actual
 per-battery values are shown in the rendered plan summary.
 
+## Measured SOC below the physical floor
+
+A finite measured initial SOC in the physical 0–100% range remains valid even when it is below the battery's
+configured minimum. The planner preserves that exact measured energy and enters a below-floor recovery regime; it
+never clamps SOC upward. While below the floor, discharge to load and export are both constrained to zero, PV
+charging remains available, and summer grid charging remains impossible.
+
+The recovery state is represented explicitly by a monotonic binary variable. Before recovery, stored energy cannot
+fall below its measured initial value. The first state at or above the configured minimum marks recovery. From that
+state onward the binary cannot clear, the normal policy floor is enforced, and SOC cannot fall below the configured
+minimum again. This explicitly excludes trajectories such as `9% -> 10.5% -> 9.5%`.
+
+`PlannerResult.below_floor_recovery` reports the measured initial SOC, configured recovery floor, whether recovery
+semantics were needed, and the first recovered state timestamp or `NOT RECOVERED`. Values below 0%, above 100%,
+NaN and infinities remain invalid. An initial value above a battery's separately configured maximum also remains
+invalid.
+
 ## Battery-role and SOC checkpoint policy
 
 DEYE is the trading battery. Its physical, economic and default terminal soft floors are all 10%, so the planner may

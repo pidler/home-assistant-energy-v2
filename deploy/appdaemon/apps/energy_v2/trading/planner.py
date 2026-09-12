@@ -7,6 +7,8 @@ import pulp
 
 from .explanation import ExplanationContext, explain_slot, price_percentile
 from .models import (
+    BatteryFloorRecovery,
+    BatteryParameters,
     BatterySlotPlan,
     ImportantDecision,
     PlanComparison,
@@ -21,6 +23,7 @@ from .objective import continuation_price, terminal_reserve_shortfall_costs, ter
 from .policy import has_configured_morning_policy, morning_exception_precheck_passes, resolve_soc_policy
 
 _EPSILON_KWH = 1e-5
+_RECOVERY_CROSSING_EPSILON_KWH = 1e-5
 
 
 def plan_trading_schedule(data: PlannerInput, config: PlannerConfig | None = None) -> PlannerResult:
@@ -63,6 +66,9 @@ def _solve_trading_candidate(
     guard_indexes = tuple(index for index, slot in enumerate(data.slots) if slot.is_guard_only)
     economic_terminal_state_index = economic_indexes[-1] + 1
     physical_terminal_state_index = len(data.slots)
+    state_timestamps = tuple(slot.timestamp for slot in data.slots) + (
+        data.slots[-1].timestamp + timedelta(hours=config.slot_hours),
+    )
     problem = pulp.LpProblem("energy_v2_phase_5a_shadow", pulp.LpMaximize)
 
     pv_to_load = pulp.LpVariable.dicts("pv_to_load", slot_indexes, lowBound=0)
@@ -76,22 +82,52 @@ def _solve_trading_candidate(
         name: pulp.LpVariable.dicts(
             f"stored_{name}",
             range(len(data.slots) + 1),
-            lowBound=batteries[name].capacity_kwh * batteries[name].minimum_soc_pct / 100,
+            lowBound=batteries[name].capacity_kwh
+            * min(data.initial_soc_pct[name], batteries[name].minimum_soc_pct)
+            / 100,
             upBound=batteries[name].capacity_kwh * batteries[name].maximum_soc_pct / 100,
         )
         for name in names
+    }
+    below_floor_names = tuple(
+        name for name, battery in batteries.items() if data.initial_soc_pct[name] < battery.minimum_soc_pct
+    )
+    recovered = {
+        name: pulp.LpVariable.dicts(
+            f"recovered_above_floor_{name}",
+            range(len(data.slots) + 1),
+            cat=pulp.LpBinary,
+        )
+        for name in below_floor_names
     }
     reserve_shortfall = {name: pulp.LpVariable(f"terminal_reserve_shortfall_{name}", lowBound=0) for name in names}
     checkpoint_shortfall: dict[int, pulp.LpVariable] = {}
 
     for name, battery in batteries.items():
         problem += stored[name][0] == battery.capacity_kwh * data.initial_soc_pct[name] / 100
+        if name in recovered:
+            floor_kwh = battery.capacity_kwh * battery.minimum_soc_pct / 100
+            problem += recovered[name][0] == 0
+            for state_index in range(len(data.slots) + 1):
+                problem += stored[name][state_index] >= floor_kwh - battery.capacity_kwh * (
+                    1 - recovered[name][state_index]
+                )
+                problem += stored[name][state_index] <= (
+                    floor_kwh - _RECOVERY_CROSSING_EPSILON_KWH + battery.capacity_kwh * recovered[name][state_index]
+                )
+                if state_index < len(data.slots):
+                    problem += recovered[name][state_index + 1] >= recovered[name][state_index]
         for index in slot_indexes:
             problem += charge[name][index] <= battery.max_charge_power_w / 1000 * config.slot_hours
             problem += (
                 discharge_load[name][index] + discharge_export[name][index]
                 <= battery.max_discharge_power_w / 1000 * config.slot_hours
             )
+            if name in recovered:
+                problem += (
+                    discharge_load[name][index] + discharge_export[name][index]
+                    <= battery.max_discharge_power_w / 1000 * config.slot_hours * recovered[name][index]
+                )
             problem += stored[name][index + 1] == (
                 stored[name][index]
                 + charge[name][index] * battery.charge_efficiency
@@ -100,13 +136,16 @@ def _solve_trading_candidate(
         terminal_reserve_kwh = battery.capacity_kwh * battery.terminal_reserve_soc_pct / 100
         problem += reserve_shortfall[name] >= terminal_reserve_kwh - stored[name][economic_terminal_state_index]
         for state_index, floor_pct in enumerate(policy.state_floors_pct[name]):
-            problem += stored[name][state_index] >= battery.capacity_kwh * floor_pct / 100
+            floor_kwh = battery.capacity_kwh * floor_pct / 100
+            if name in recovered:
+                problem += stored[name][state_index] >= floor_kwh - battery.capacity_kwh * (
+                    1 - recovered[name][state_index]
+                )
+            else:
+                problem += stored[name][state_index] >= floor_kwh
         for index in policy.recovery_export_blocked_indexes[name]:
             problem += discharge_export[name][index] == 0
 
-    state_timestamps = tuple(slot.timestamp for slot in data.slots) + (
-        data.slots[-1].timestamp + timedelta(hours=config.slot_hours),
-    )
     state_indexes = {timestamp: index for index, timestamp in enumerate(state_timestamps)}
     for checkpoint_index, checkpoint in enumerate(policy.checkpoints):
         state_index = state_indexes.get(checkpoint.timestamp)
@@ -381,6 +420,16 @@ def _solve_trading_candidate(
         )
         for key, assessment in policy.morning_recovery.items()
     }
+    below_floor_results = {
+        name: _floor_recovery_result(
+            name,
+            battery,
+            data.initial_soc_pct[name],
+            state_timestamps,
+            recovered.get(name),
+        )
+        for name, battery in batteries.items()
+    }
     return PlannerResult(
         generated_at=generated_at,
         horizon_start=data.slots[0].timestamp,
@@ -388,6 +437,7 @@ def _solve_trading_candidate(
         economic_horizon_end=data.slots[economic_indexes[-1]].timestamp + timedelta(hours=config.slot_hours),
         slots=tuple(planned_slots),
         initial_soc_pct=dict(data.initial_soc_pct),
+        below_floor_recovery=below_floor_results,
         economic_terminal_soc_pct=economic_terminal_soc,
         economic_terminal_stored_kwh=economic_terminal_stored,
         physical_terminal_soc_pct=physical_terminal_soc,
@@ -419,6 +469,36 @@ def _solve_trading_candidate(
         objective_value_czk=economic_objective_value,
         load_forecast_quality=data.load_forecast_quality,
         important_decisions=decisions,
+    )
+
+
+def _floor_recovery_result(
+    name: str,
+    battery: BatteryParameters,
+    initial_soc_pct: float,
+    state_timestamps: tuple[datetime, ...],
+    recovered: dict[int, pulp.LpVariable] | None,
+) -> BatteryFloorRecovery:
+    initial_below = initial_soc_pct < battery.minimum_soc_pct
+    recovered_at = state_timestamps[0] if not initial_below else None
+    if recovered is not None:
+        recovered_at = next(
+            (timestamp for index, timestamp in enumerate(state_timestamps) if _value(recovered[index]) >= 0.5),
+            None,
+        )
+    reason = (
+        f"BATTERY BELOW PHYSICAL FLOOR: measured SOC is {initial_soc_pct:.1f}%, configured minimum is "
+        f"{battery.minimum_soc_pct:.1f}%; discharge is blocked until recovery."
+        if initial_below
+        else "Measured initial SOC is at or above the configured physical floor."
+    )
+    return BatteryFloorRecovery(
+        battery_name=name,
+        initial_below_physical_floor=initial_below,
+        measured_initial_soc_pct=initial_soc_pct,
+        recovery_floor_pct=battery.minimum_soc_pct,
+        recovered_at=recovered_at,
+        reason=reason,
     )
 
 

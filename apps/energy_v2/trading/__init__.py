@@ -5,6 +5,7 @@ Nothing in this package publishes commands or calls Home Assistant services.
 
 from .inputs import assemble_slots, calculate_whole_site_load_w
 from .models import (
+    BatteryFloorRecovery,
     BatteryParameters,
     BatteryRole,
     CheckpointType,
@@ -23,6 +24,7 @@ from .models import (
 from .planner import compare_plans, plan_trading_schedule
 
 __all__ = [
+    "BatteryFloorRecovery",
     "BatteryParameters",
     "BatteryRole",
     "CheckpointType",
