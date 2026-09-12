@@ -25,6 +25,14 @@ def render_text(result: PlannerResult) -> str:
         "ECONOMIC HORIZON END",
     ]
     for name in names:
+        recovery = result.below_floor_recovery[name]
+        if recovery.initial_below_physical_floor:
+            lines.append(
+                f"BELOW-FLOOR RECOVERY {name}: measured initial SOC {recovery.measured_initial_soc_pct:.1f}%, "
+                f"configured floor {recovery.recovery_floor_pct:.1f}%, recovered at "
+                f"{recovery.recovered_at.isoformat() if recovery.recovered_at is not None else 'NOT RECOVERED'}; "
+                f"{recovery.reason}"
+            )
         lines.append(
             f"{name} SOC: {result.initial_soc_pct[name]:.1f}% -> economic terminal "
             f"{result.economic_terminal_soc_pct[name]:.1f}%; physical minimum "

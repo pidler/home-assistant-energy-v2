@@ -7,6 +7,7 @@ import pytest
 
 from apps.energy_v2.trading.models import (
     BatteryParameters,
+    BatteryRole,
     ForecastQuality,
     PlannerConfig,
     PlannerInput,
@@ -384,3 +385,92 @@ def test_guard_only_slot_requires_both_prices_to_be_unavailable() -> None:
     bad = TradingSlotInput(START, None, 1.0, 0.0, 0.0)
     with pytest.raises(ValueError, match="both be available or both be unavailable"):
         plan_trading_schedule(PlannerInput((bad,), (item,), {"DEYE": 10}))
+
+
+def test_below_floor_initial_soc_recovers_from_pv_without_inventing_energy() -> None:
+    item = battery(reserve=10)
+    result = plan_trading_schedule(planning_input([1, 2], pv=[0.2, 0], batteries=(item,), initial_soc={"DEYE": 9}))
+
+    recovery = result.below_floor_recovery["DEYE"]
+    assert result.initial_soc_pct["DEYE"] == pytest.approx(9)
+    assert result.slots[0].batteries["DEYE"].discharge_to_load_kwh == pytest.approx(0)
+    assert result.slots[0].batteries["DEYE"].discharge_to_export_kwh == pytest.approx(0)
+    assert result.slots[0].batteries["DEYE"].charge_from_pv_kwh > 0
+    assert result.slots[0].batteries["DEYE"].projected_soc_pct > 10
+    assert recovery.initial_below_physical_floor
+    assert recovery.measured_initial_soc_pct == pytest.approx(9)
+    assert recovery.recovery_floor_pct == pytest.approx(10)
+    assert recovery.recovered_at == START + timedelta(minutes=15)
+    assert "BATTERY BELOW PHYSICAL FLOOR" in render_text(result)
+    assert '"initial_below_physical_floor": true' in render_json(result)
+
+
+def test_below_floor_without_pv_remains_feasible_and_cannot_supply_load() -> None:
+    item = battery(reserve=10)
+    result = plan_trading_schedule(planning_input([1, 1], load=[0.2, 0.2], batteries=(item,), initial_soc={"DEYE": 9}))
+
+    assert result.expected_import_kwh == pytest.approx(0.4)
+    assert result.physical_terminal_soc_pct["DEYE"] == pytest.approx(9)
+    assert all(slot.batteries["DEYE"].discharge_to_load_kwh == pytest.approx(0) for slot in result.slots)
+    assert all(slot.batteries["DEYE"].discharge_to_export_kwh == pytest.approx(0) for slot in result.slots)
+    assert result.below_floor_recovery["DEYE"].recovered_at is None
+
+
+def test_trading_resumes_after_below_floor_recovery() -> None:
+    item = battery(reserve=10)
+    result = plan_trading_schedule(
+        planning_input([1, 1, 100], pv=[0.2, 0, 0], batteries=(item,), initial_soc={"DEYE": 9})
+    )
+
+    assert result.below_floor_recovery["DEYE"].recovered_at == START + timedelta(minutes=15)
+    assert result.slots[2].batteries["DEYE"].discharge_to_export_kwh > 0
+    assert result.slots[2].batteries["DEYE"].projected_soc_pct == pytest.approx(10)
+
+
+def test_recovered_battery_cannot_fall_below_normal_floor_again() -> None:
+    item = battery(reserve=10)
+    result = plan_trading_schedule(
+        planning_input([1, 1, 100, 100], pv=[0.2, 0, 0, 0], batteries=(item,), initial_soc={"DEYE": 9})
+    )
+
+    recovered_at = result.below_floor_recovery["DEYE"].recovered_at
+    assert recovered_at is not None
+    recovered_index = int((recovered_at - START) / timedelta(minutes=15))
+    projected_after_recovery = [slot.batteries["DEYE"].projected_soc_pct for slot in result.slots[recovered_index:]]
+    assert min(projected_after_recovery) >= 10 - 1e-6
+
+
+def test_initial_soc_exactly_at_floor_preserves_existing_behavior() -> None:
+    item = battery(reserve=10)
+    result = plan_trading_schedule(planning_input([100], batteries=(item,), initial_soc={"DEYE": 10}))
+
+    recovery = result.below_floor_recovery["DEYE"]
+    assert not recovery.initial_below_physical_floor
+    assert recovery.recovered_at == START
+    assert result.slots[0].batteries["DEYE"].discharge_to_export_kwh == pytest.approx(0)
+    assert result.terminal_soc_pct["DEYE"] == pytest.approx(10)
+
+
+def test_zero_percent_is_valid_measured_state_but_cannot_discharge() -> None:
+    item = battery(reserve=10)
+    result = plan_trading_schedule(planning_input([1], load=[0.2], batteries=(item,), initial_soc={"DEYE": 0}))
+
+    assert result.initial_soc_pct["DEYE"] == pytest.approx(0)
+    assert result.physical_terminal_soc_pct["DEYE"] == pytest.approx(0)
+    assert result.slots[0].batteries["DEYE"].discharge_to_load_kwh == pytest.approx(0)
+    assert result.expected_import_kwh == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("soc", [-1, 101, float("nan"), float("inf"), float("-inf")])
+def test_initial_soc_outside_physical_range_is_rejected(soc: float) -> None:
+    with pytest.raises(ValueError, match="physical 0-100% range"):
+        plan_trading_schedule(planning_input([1], initial_soc={"DEYE": soc}))
+
+
+def test_below_floor_recovery_is_generic_for_solax() -> None:
+    item = replace(battery("SolaX", reserve=10), role=BatteryRole.HOUSE_RESERVE_BATTERY)
+    result = plan_trading_schedule(planning_input([1], load=[0.2], batteries=(item,), initial_soc={"SolaX": 9}))
+
+    assert result.initial_soc_pct["SolaX"] == pytest.approx(9)
+    assert result.slots[0].batteries["SolaX"].discharge_to_load_kwh == pytest.approx(0)
+    assert result.below_floor_recovery["SolaX"].initial_below_physical_floor
