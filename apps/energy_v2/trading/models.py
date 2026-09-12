@@ -251,8 +251,10 @@ class PlannerInput:
             soc = self.initial_soc_pct.get(battery.name)
             if soc is None:
                 raise ValueError(f"initial SOC missing for {battery.name}")
-            if not isfinite(soc) or not battery.minimum_soc_pct <= soc <= battery.maximum_soc_pct:
-                raise ValueError(f"initial SOC outside limits for {battery.name}")
+            if not isfinite(soc) or not 0 <= soc <= 100:
+                raise ValueError(f"initial SOC outside physical 0-100% range for {battery.name}")
+            if soc > battery.maximum_soc_pct:
+                raise ValueError(f"initial SOC above configured maximum for {battery.name}")
         battery_map = {battery.name: battery for battery in self.batteries}
         for checkpoint in self.soc_checkpoints:
             battery = battery_map.get(checkpoint.battery_name)
@@ -327,6 +329,16 @@ class MorningRecoveryAssessment:
 
 
 @dataclass(frozen=True)
+class BatteryFloorRecovery:
+    battery_name: str
+    initial_below_physical_floor: bool
+    measured_initial_soc_pct: float
+    recovery_floor_pct: float
+    recovered_at: datetime | None
+    reason: str
+
+
+@dataclass(frozen=True)
 class PlannerResult:
     generated_at: datetime
     horizon_start: datetime
@@ -334,6 +346,7 @@ class PlannerResult:
     economic_horizon_end: datetime
     slots: tuple[TradingSlotPlan, ...]
     initial_soc_pct: dict[str, float]
+    below_floor_recovery: dict[str, BatteryFloorRecovery]
     economic_terminal_soc_pct: dict[str, float]
     economic_terminal_stored_kwh: dict[str, float]
     physical_terminal_soc_pct: dict[str, float]
