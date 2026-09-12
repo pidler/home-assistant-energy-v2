@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime, timedelta
 
-from .models import BatteryParameters, PhysicalLimitStatus, PlannerInput, TradingSlotInput
+from .models import BatteryParameters, BatteryRole, PhysicalLimitStatus, PlannerInput, TradingSlotInput
 from .planner import plan_trading_schedule
 from .renderer import render_json, render_text
 
@@ -25,6 +25,7 @@ def synthetic_example() -> PlannerInput:
                 max_charge_power_w=10_000,
                 max_discharge_power_w=10_000,
                 power_limit_status=PhysicalLimitStatus.MODEL_ASSUMPTION,
+                role=BatteryRole.TRADING_BATTERY,
             ),
             BatteryParameters(
                 "SolaX",
@@ -32,6 +33,7 @@ def synthetic_example() -> PlannerInput:
                 max_charge_power_w=10_000,
                 max_discharge_power_w=10_000,
                 power_limit_status=PhysicalLimitStatus.MODEL_ASSUMPTION,
+                role=BatteryRole.HOUSE_RESERVE_BATTERY,
             ),
         ),
         initial_soc_pct={"DEYE": 60, "SolaX": 60},
