@@ -16,8 +16,11 @@ def continuation_price(slots: tuple[TradingSlotInput, ...], config: PlannerConfi
 
     if config.terminal_continuation_price_czk_per_kwh is not None:
         return config.terminal_continuation_price_czk_per_kwh
+    priced_slots = tuple(slot for slot in slots if not slot.is_guard_only)
+    if not priced_slots:
+        raise ValueError("continuation price requires an economic horizon")
     lookback_slots = max(1, ceil(config.terminal_price_lookback_hours / config.slot_hours))
-    return float(median(slot.sell_price_czk_per_kwh for slot in slots[-lookback_slots:]))
+    return float(median(slot.sell_price_czk_per_kwh for slot in priced_slots[-lookback_slots:]))  # type: ignore[arg-type]
 
 
 def terminal_values(

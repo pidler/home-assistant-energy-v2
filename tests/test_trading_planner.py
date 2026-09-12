@@ -305,3 +305,82 @@ def test_positive_cycle_penalty_avoids_simultaneous_charge_and_discharge() -> No
         battery_plan = slot.batteries["DEYE"]
         discharged = battery_plan.discharge_to_load_kwh + battery_plan.discharge_to_export_kwh
         assert not (battery_plan.charge_from_pv_kwh > 1e-6 and discharged > 1e-6)
+
+
+def test_guard_only_slot_blocks_export_but_keeps_pv_charging_active() -> None:
+    item = battery(reserve=10)
+    slots = (
+        TradingSlotInput(START, 8.0, 1.0, 0.0, 0.0),
+        TradingSlotInput(START + timedelta(minutes=15), None, None, 1.0, 0.0),
+    )
+    data = PlannerInput(slots, (item,), {"DEYE": 10})
+
+    result = plan_trading_schedule(data)
+    guard = result.slots[1]
+
+    assert result.economic_horizon_end == START + timedelta(minutes=15)
+    assert result.horizon_end == START + timedelta(minutes=30)
+    assert guard.guard_only
+    assert guard.planned_grid_export_kwh == pytest.approx(0)
+    assert guard.batteries["DEYE"].discharge_to_export_kwh == pytest.approx(0)
+    assert guard.batteries["DEYE"].charge_from_pv_kwh > 0
+    assert "price is unavailable" in guard.reason
+    assert "GUARD" in render_text(result)
+
+
+def test_economic_and_physical_terminal_states_are_distinct() -> None:
+    item = battery(reserve=20)
+    priced = TradingSlotInput(START, 8.0, 1.0, 0.0, 0.0)
+    guard = tuple(
+        TradingSlotInput(START + timedelta(minutes=15 * index), None, None, 0.0, 0.1) for index in range(1, 5)
+    )
+
+    result = plan_trading_schedule(PlannerInput((priced, *guard), (item,), {"DEYE": 30}))
+
+    assert result.economic_terminal_soc_pct["DEYE"] == pytest.approx(
+        result.slots[0].batteries["DEYE"].projected_soc_pct
+    )
+    assert result.physical_terminal_soc_pct["DEYE"] < result.economic_terminal_soc_pct["DEYE"]
+    assert result.terminal_soc_pct == result.economic_terminal_soc_pct
+    assert result.terminal_stored_kwh == result.economic_terminal_stored_kwh
+    rendered = render_text(result)
+    assert "ECONOMIC HORIZON END" in rendered
+    assert "PHYSICAL GUARD END" in rendered
+
+
+def test_guard_does_not_move_continuation_valuation_or_priced_decisions() -> None:
+    item = battery(reserve=20)
+    base = planning_input([1, 7, 2], batteries=(item,), initial_soc={"DEYE": 60})
+    guard = tuple(
+        TradingSlotInput(base.slots[-1].timestamp + timedelta(minutes=15 * index), None, None, 0.0, 0.0)
+        for index in range(1, 9)
+    )
+
+    without_guard = plan_trading_schedule(base)
+    with_guard = plan_trading_schedule(
+        PlannerInput(
+            (*base.slots, *guard),
+            base.batteries,
+            base.initial_soc_pct,
+            generated_at=base.generated_at,
+            load_forecast_quality=base.load_forecast_quality,
+        )
+    )
+
+    assert with_guard.terminal_continuation_price_czk_per_kwh == pytest.approx(
+        without_guard.terminal_continuation_price_czk_per_kwh
+    )
+    assert with_guard.terminal_value_czk_per_kwh == without_guard.terminal_value_czk_per_kwh
+    assert with_guard.economic_terminal_stored_kwh == pytest.approx(without_guard.economic_terminal_stored_kwh)
+    assert with_guard.objective_value_czk == pytest.approx(without_guard.objective_value_czk)
+    for expected, actual in zip(without_guard.slots, with_guard.slots[: len(base.slots)], strict=True):
+        assert actual.planned_grid_import_kwh == pytest.approx(expected.planned_grid_import_kwh)
+        assert actual.planned_grid_export_kwh == pytest.approx(expected.planned_grid_export_kwh)
+        assert actual.batteries["DEYE"].planned_power_w == pytest.approx(expected.batteries["DEYE"].planned_power_w)
+
+
+def test_guard_only_slot_requires_both_prices_to_be_unavailable() -> None:
+    item = battery(reserve=10)
+    bad = TradingSlotInput(START, None, 1.0, 0.0, 0.0)
+    with pytest.raises(ValueError, match="both be available or both be unavailable"):
+        plan_trading_schedule(PlannerInput((bad,), (item,), {"DEYE": 10}))

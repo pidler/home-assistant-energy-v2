@@ -20,15 +20,21 @@ def assemble_slots(
     sell_prices: dict[datetime, float],
     pv_forecast_kwh: dict[datetime, float],
     load_forecast_kwh: dict[datetime, float],
+    *,
+    guard_until: datetime | None = None,
 ) -> tuple[TradingSlotInput, ...]:
-    """Join prepared series on their complete common 15-minute horizon."""
+    """Join the priced horizon and optionally append price-free physical guard slots.
+
+    ``guard_until`` is an exclusive state boundary. Every appended 15-minute
+    slot must have PV and load data; prices remain explicitly unavailable.
+    """
 
     timestamps = sorted(buy_prices.keys() & sell_prices.keys() & pv_forecast_kwh.keys() & load_forecast_kwh.keys())
     if not timestamps:
         raise ValueError("price, PV and load series have no common timestamps")
     if any(right - left != timedelta(minutes=15) for left, right in zip(timestamps, timestamps[1:], strict=False)):
         raise ValueError("common input horizon is not continuous at 15-minute cadence")
-    return tuple(
+    slots = [
         TradingSlotInput(
             timestamp=timestamp,
             buy_price_czk_per_kwh=buy_prices[timestamp],
@@ -37,7 +43,25 @@ def assemble_slots(
             load_forecast_kwh=load_forecast_kwh[timestamp],
         )
         for timestamp in timestamps
-    )
+    ]
+    if guard_until is not None:
+        if guard_until.tzinfo is None:
+            raise ValueError("guard horizon must be timezone-aware")
+        timestamp = timestamps[-1] + timedelta(minutes=15)
+        while timestamp < guard_until:
+            if timestamp not in pv_forecast_kwh or timestamp not in load_forecast_kwh:
+                raise ValueError(f"PV/load data missing for guard slot {timestamp.isoformat()}")
+            slots.append(
+                TradingSlotInput(
+                    timestamp=timestamp,
+                    buy_price_czk_per_kwh=None,
+                    sell_price_czk_per_kwh=None,
+                    pv_forecast_kwh=pv_forecast_kwh[timestamp],
+                    load_forecast_kwh=load_forecast_kwh[timestamp],
+                )
+            )
+            timestamp += timedelta(minutes=15)
+    return tuple(slots)
 
 
 def parse_timestamped_prices(attributes: dict[str, Any], *, now: datetime | None = None) -> dict[datetime, float]:

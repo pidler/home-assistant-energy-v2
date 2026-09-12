@@ -59,10 +59,15 @@ def _solve_trading_candidate(
     names = tuple(batteries)
     policy = resolve_soc_policy(data, config, morning_exception_enabled=morning_exception_enabled)
     slot_indexes = range(len(data.slots))
+    economic_indexes = tuple(index for index, slot in enumerate(data.slots) if not slot.is_guard_only)
+    guard_indexes = tuple(index for index, slot in enumerate(data.slots) if slot.is_guard_only)
+    economic_terminal_state_index = economic_indexes[-1] + 1
+    physical_terminal_state_index = len(data.slots)
     problem = pulp.LpProblem("energy_v2_phase_5a_shadow", pulp.LpMaximize)
 
     pv_to_load = pulp.LpVariable.dicts("pv_to_load", slot_indexes, lowBound=0)
     pv_export = pulp.LpVariable.dicts("pv_export", slot_indexes, lowBound=0)
+    pv_curtailment = pulp.LpVariable.dicts("pv_curtailment", slot_indexes, lowBound=0)
     grid_import = pulp.LpVariable.dicts("grid_import", slot_indexes, lowBound=0)
     charge = pulp.LpVariable.dicts("pv_charge", (names, slot_indexes), lowBound=0)
     discharge_load = pulp.LpVariable.dicts("battery_to_load", (names, slot_indexes), lowBound=0)
@@ -93,7 +98,7 @@ def _solve_trading_candidate(
                 - (discharge_load[name][index] + discharge_export[name][index]) / battery.discharge_efficiency
             )
         terminal_reserve_kwh = battery.capacity_kwh * battery.terminal_reserve_soc_pct / 100
-        problem += reserve_shortfall[name] >= terminal_reserve_kwh - stored[name][len(data.slots)]
+        problem += reserve_shortfall[name] >= terminal_reserve_kwh - stored[name][economic_terminal_state_index]
         for state_index, floor_pct in enumerate(policy.state_floors_pct[name]):
             problem += stored[name][state_index] >= battery.capacity_kwh * floor_pct / 100
         for index in policy.recovery_export_blocked_indexes[name]:
@@ -121,8 +126,11 @@ def _solve_trading_candidate(
     for index, slot in enumerate(data.slots):
         available_pv_surplus = max(slot.pv_forecast_kwh - slot.load_forecast_kwh, 0.0)
         problem += (
-            pv_to_load[index] + pv_export[index] + pulp.lpSum(charge[name][index] for name in names)
-            <= slot.pv_forecast_kwh
+            pv_to_load[index]
+            + pv_export[index]
+            + pulp.lpSum(charge[name][index] for name in names)
+            + pv_curtailment[index]
+            == slot.pv_forecast_kwh
         )
         problem += pulp.lpSum(charge[name][index] for name in names) <= available_pv_surplus
         problem += (
@@ -131,48 +139,106 @@ def _solve_trading_candidate(
         )
         problem += pv_export[index] + pulp.lpSum(discharge_export[name][index] for name in names) <= export_cap_kwh
         problem += grid_import[index] <= import_cap_kwh
+        if slot.is_guard_only:
+            problem += pv_export[index] == 0
+            for name in names:
+                problem += discharge_export[name][index] == 0
 
     continuation_values = terminal_values(data.slots, data.batteries, config)
     reserve_shortfall_costs = terminal_reserve_shortfall_costs(data.slots, data.batteries, config)
     revenue = pulp.lpSum(
         data.slots[index].sell_price_czk_per_kwh
         * (pv_export[index] + pulp.lpSum(discharge_export[name][index] for name in names))
-        for index in slot_indexes
+        for index in economic_indexes
     )
-    import_cost = pulp.lpSum(data.slots[index].buy_price_czk_per_kwh * grid_import[index] for index in slot_indexes)
-    cycling_cost = config.cycling_penalty_czk_per_kwh * pulp.lpSum(
+    import_cost = pulp.lpSum(data.slots[index].buy_price_czk_per_kwh * grid_import[index] for index in economic_indexes)
+    economic_cycling_cost = config.cycling_penalty_czk_per_kwh * pulp.lpSum(
         charge[name][index] + discharge_load[name][index] + discharge_export[name][index]
         for name in names
-        for index in slot_indexes
+        for index in economic_indexes
     )
-    solax_tie_break = config.solax_tie_break_penalty_czk_per_kwh * pulp.lpSum(
+    economic_solax_tie_break = config.solax_tie_break_penalty_czk_per_kwh * pulp.lpSum(
         discharge_load[name][index] + discharge_export[name][index]
         for name in names
         if name.casefold() == "solax"
-        for index in slot_indexes
+        for index in economic_indexes
     )
-    terminal_value = pulp.lpSum(continuation_values[name] * stored[name][len(data.slots)] for name in names)
+    terminal_value = pulp.lpSum(
+        continuation_values[name] * stored[name][economic_terminal_state_index] for name in names
+    )
     reserve_shortfall_cost = pulp.lpSum(reserve_shortfall_costs[name] * reserve_shortfall[name] for name in names)
     operational_shortfall_cost = config.operational_checkpoint_shortfall_penalty_czk_per_kwh * pulp.lpSum(
         checkpoint_shortfall.values()
     )
-    problem += (
+    guard_grid_import_cost = config.guard_grid_import_penalty_czk_per_kwh * pulp.lpSum(
+        grid_import[index] for index in guard_indexes
+    )
+    guard_trading_battery_load_tie_break = config.guard_trading_battery_load_tie_break_czk_per_kwh * pulp.lpSum(
+        discharge_load[name][index]
+        for name in names
+        if batteries[name].role.value == "TRADING_BATTERY"
+        for index in guard_indexes
+    )
+    economic_objective = (
         revenue
         - import_cost
-        - cycling_cost
-        - solax_tie_break
+        - economic_cycling_cost
+        - economic_solax_tie_break
         + terminal_value
         - reserve_shortfall_cost
         - operational_shortfall_cost
     )
+    problem += economic_objective
 
     status = problem.solve(pulp.PULP_CBC_CMD(msg=False, threads=1))
     if pulp.LpStatus[status] != "Optimal":
         raise RuntimeError(f"trading planner did not find an optimal solution: {pulp.LpStatus[status]}")
+    economic_objective_value = _value(economic_objective)
 
-    prices = tuple(slot.sell_price_czk_per_kwh for slot in data.slots)
-    terminal_stored = {name: _value(stored[name][len(data.slots)]) for name in names}
-    terminal_soc = {name: 100 * terminal_stored[name] / battery.capacity_kwh for name, battery in batteries.items()}
+    if guard_indexes:
+        for index in economic_indexes:
+            _fix_variable(problem, pv_to_load[index])
+            _fix_variable(problem, pv_export[index])
+            _fix_variable(problem, pv_curtailment[index])
+            _fix_variable(problem, grid_import[index])
+            for name in names:
+                _fix_variable(problem, charge[name][index])
+                _fix_variable(problem, discharge_load[name][index])
+                _fix_variable(problem, discharge_export[name][index])
+        for name in names:
+            for state_index in range(economic_terminal_state_index + 1):
+                _fix_variable(problem, stored[name][state_index])
+            _fix_variable(problem, reserve_shortfall[name])
+        for variable in checkpoint_shortfall.values():
+            _fix_variable(problem, variable)
+
+        guard_cycling_score = config.cycling_penalty_czk_per_kwh * pulp.lpSum(
+            charge[name][index] + discharge_load[name][index] + discharge_export[name][index]
+            for name in names
+            for index in guard_indexes
+        )
+        guard_pv_curtailment_score = config.guard_grid_import_penalty_czk_per_kwh * pulp.lpSum(
+            pv_curtailment[index] for index in guard_indexes
+        )
+        problem.setObjective(
+            -guard_grid_import_cost
+            - guard_pv_curtailment_score
+            - guard_trading_battery_load_tie_break
+            - guard_cycling_score
+        )
+        status = problem.solve(pulp.PULP_CBC_CMD(msg=False, threads=1))
+        if pulp.LpStatus[status] != "Optimal":
+            raise RuntimeError(f"physical guard planner did not find an optimal solution: {pulp.LpStatus[status]}")
+
+    prices = tuple(_known_price(slot.sell_price_czk_per_kwh) for slot in data.slots if not slot.is_guard_only)
+    economic_terminal_stored = {name: _value(stored[name][economic_terminal_state_index]) for name in names}
+    economic_terminal_soc = {
+        name: 100 * economic_terminal_stored[name] / battery.capacity_kwh for name, battery in batteries.items()
+    }
+    physical_terminal_stored = {name: _value(stored[name][physical_terminal_state_index]) for name in names}
+    physical_terminal_soc = {
+        name: 100 * physical_terminal_stored[name] / battery.capacity_kwh for name, battery in batteries.items()
+    }
     terminal_shortfall = {name: _value(reserve_shortfall[name]) for name in names}
     reserve_targets = {
         name: battery.capacity_kwh * battery.terminal_reserve_soc_pct / 100 for name, battery in batteries.items()
@@ -196,6 +262,8 @@ def _solve_trading_candidate(
                 planned_power_w=net_ac_kwh / config.slot_hours * 1000,
                 projected_soc_pct=100 * _value(stored[name][index + 1]) / battery.capacity_kwh,
                 active_soc_floor_pct=policy.state_floors_pct[name][index + 1],
+                trading_export_blocked=index in policy.recovery_export_blocked_indexes[name] or slot.is_guard_only,
+                overnight_trading_export_blocked=index in policy.overnight_export_blocked_indexes[name],
             )
         export_kwh = _value(pv_export[index]) + total_battery_export
         import_kwh = _value(grid_import[index])
@@ -219,6 +287,7 @@ def _solve_trading_candidate(
                 batteries=battery_plans,
                 action=action,
                 reason="",
+                guard_only=slot.is_guard_only,
             )
         )
 
@@ -230,7 +299,9 @@ def _solve_trading_candidate(
             > _EPSILON_KWH
         ]
         future_export_index = (
-            max(future_indexes, key=lambda item: planned_slots[item].sell_price_czk_per_kwh) if future_indexes else None
+            max(future_indexes, key=lambda item: _known_price(planned_slots[item].sell_price_czk_per_kwh))
+            if future_indexes
+            else None
         )
         future_export_kwh = sum(
             sum(battery.discharge_to_export_kwh for battery in planned_slots[item].batteries.values())
@@ -247,12 +318,14 @@ def _solve_trading_candidate(
         context = ExplanationContext(
             current_soc_pct={name: 100 * current_stored[name] / batteries[name].capacity_kwh for name in names},
             current_stored_kwh=current_stored,
-            terminal_soc_pct=terminal_soc,
+            terminal_soc_pct=economic_terminal_soc,
             terminal_reserve_target_kwh=reserve_targets,
             terminal_reserve_shortfall_kwh=terminal_shortfall,
             future_planned_battery_export_kwh=future_export_kwh,
             future_export_price_czk_per_kwh=(
-                planned_slots[future_export_index].sell_price_czk_per_kwh if future_export_index is not None else None
+                _known_price(planned_slots[future_export_index].sell_price_czk_per_kwh)
+                if future_export_index is not None
+                else None
             ),
             pv_before_future_export_kwh=(
                 sum(data.slots[item].pv_forecast_kwh for item in range(index + 1, future_export_index + 1))
@@ -267,13 +340,25 @@ def _solve_trading_candidate(
                 data.slots[index],
                 action=planned.action,
                 battery_export_kwh=battery_export_kwh,
-                price_percentile=price_percentile(prices, planned.sell_price_czk_per_kwh),
+                price_percentile=(
+                    price_percentile(prices, _known_price(planned.sell_price_czk_per_kwh))
+                    if not planned.guard_only
+                    else 0.0
+                ),
                 context=context,
             ),
         )
 
-    revenue_value = sum(slot.planned_grid_export_kwh * slot.sell_price_czk_per_kwh for slot in planned_slots)
-    import_cost_value = sum(slot.planned_grid_import_kwh * slot.buy_price_czk_per_kwh for slot in planned_slots)
+    revenue_value = sum(
+        slot.planned_grid_export_kwh * _known_price(slot.sell_price_czk_per_kwh)
+        for slot in planned_slots
+        if not slot.guard_only
+    )
+    import_cost_value = sum(
+        slot.planned_grid_import_kwh * _known_price(slot.buy_price_czk_per_kwh)
+        for slot in planned_slots
+        if not slot.guard_only
+    )
     decisions = _important_decisions(planned_slots)
     generated_at = data.generated_at or datetime.now(UTC)
     checkpoint_results = tuple(
@@ -300,10 +385,15 @@ def _solve_trading_candidate(
         generated_at=generated_at,
         horizon_start=data.slots[0].timestamp,
         horizon_end=data.slots[-1].timestamp + timedelta(hours=config.slot_hours),
+        economic_horizon_end=data.slots[economic_indexes[-1]].timestamp + timedelta(hours=config.slot_hours),
         slots=tuple(planned_slots),
         initial_soc_pct=dict(data.initial_soc_pct),
-        terminal_soc_pct=terminal_soc,
-        terminal_stored_kwh=terminal_stored,
+        economic_terminal_soc_pct=economic_terminal_soc,
+        economic_terminal_stored_kwh=economic_terminal_stored,
+        physical_terminal_soc_pct=physical_terminal_soc,
+        physical_terminal_stored_kwh=physical_terminal_stored,
+        terminal_soc_pct=economic_terminal_soc,
+        terminal_stored_kwh=economic_terminal_stored,
         minimum_physical_soc_pct={name: battery.minimum_soc_pct for name, battery in batteries.items()},
         terminal_reserve_target_soc_pct={name: battery.terminal_reserve_soc_pct for name, battery in batteries.items()},
         terminal_value_czk_per_kwh=continuation_values,
@@ -326,7 +416,7 @@ def _solve_trading_candidate(
         expected_revenue_czk=revenue_value,
         expected_import_cost_czk=import_cost_value,
         expected_net_grid_value_czk=revenue_value - import_cost_value,
-        objective_value_czk=_value(problem.objective),
+        objective_value_czk=economic_objective_value,
         load_forecast_quality=data.load_forecast_quality,
         important_decisions=decisions,
     )
@@ -407,7 +497,7 @@ def _decorate_policy_reasons(result: PlannerResult) -> PlannerResult:
                     )
                     notes.append(
                         f"EXPORT {name}: entered morning at {assessment.morning_start_soc_pct:.1f}% after house "
-                        f"operation; sell price {slot.sell_price_czk_per_kwh:.2f} CZK/kWh; conditional "
+                        f"operation; sell price {_known_price(slot.sell_price_czk_per_kwh):.2f} CZK/kWh; conditional "
                         f"{assessment.conditional_floor_pct:.0f}% trading floor is active and export reduces the "
                         f"projected minimum SOC to {assessment.minimum_projected_soc_pct:.1f}%; forecast recovery "
                         f"to {assessment.recovery_target_pct:.0f}% by {recovered}; "
@@ -418,6 +508,11 @@ def _decorate_policy_reasons(result: PlannerResult) -> PlannerResult:
             if role.value != "HOUSE_RESERVE_BATTERY":
                 continue
             assessment = _assessment_for_slot(result, name, slot.timestamp)
+            if slot.batteries[name].overnight_trading_export_blocked:
+                notes.append(
+                    f"HOLD {name} TRADING: the evening reserve is dedicated to overnight house operation; "
+                    "trading export is blocked until the morning trading window."
+                )
             if (
                 assessment is not None
                 and not assessment.selected
@@ -552,6 +647,16 @@ def _important_decisions(slots: list[TradingSlotPlan]) -> tuple[ImportantDecisio
             decisions.append(ImportantDecision(slot.timestamp, slot.action, slot.reason))
             previous = slot.action
     return tuple(decisions)
+
+
+def _known_price(value: float | None) -> float:
+    if value is None:
+        raise RuntimeError("guard-only slot unexpectedly entered the economic objective")
+    return value
+
+
+def _fix_variable(problem: pulp.LpProblem, variable: pulp.LpVariable) -> None:
+    problem += variable == _value(variable)
 
 
 def _value(expression: pulp.LpAffineExpression | pulp.LpVariable) -> float:

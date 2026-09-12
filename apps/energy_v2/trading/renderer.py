@@ -9,30 +9,40 @@ from .models import PlannerResult
 def render_text(result: PlannerResult) -> str:
     names = tuple(result.initial_soc_pct)
     lines = [
-        f"Planning horizon: {result.horizon_start.isoformat()} -> {result.horizon_end.isoformat()}",
+        f"Economic horizon: {result.horizon_start.isoformat()} -> {result.economic_horizon_end.isoformat()}",
+        f"Physical guard horizon: {result.horizon_start.isoformat()} -> {result.horizon_end.isoformat()}",
         f"Expected export: {result.expected_export_kwh:.3f} kWh",
         f"Expected import: {result.expected_import_kwh:.3f} kWh",
         f"Expected revenue: {result.expected_revenue_czk:.2f} CZK",
         f"Expected import cost: {result.expected_import_cost_czk:.2f} CZK",
         f"Expected net grid value: {result.expected_net_grid_value_czk:.2f} CZK",
-        f"Economic objective including terminal value/penalties: {result.objective_value_czk:.2f} CZK",
+        f"Economic objective including terminal value/penalties: {result.objective_value_czk:.2f} CZK "
+        "(physical guard tie-break score excluded)",
         f"Load forecast quality: {result.load_forecast_quality.value}",
         f"Terminal continuation estimate: {result.terminal_continuation_price_czk_per_kwh:.2f} CZK/kWh "
         f"({result.terminal_value_method})",
         "Terminal reserve classification: HEURISTIC SOFT RESERVE (not a physical minimum or guaranteed result)",
+        "ECONOMIC HORIZON END",
     ]
     for name in names:
         lines.append(
-            f"{name} SOC: {result.initial_soc_pct[name]:.1f}% -> actual terminal "
-            f"{result.terminal_soc_pct[name]:.1f}%; physical minimum {result.minimum_physical_soc_pct[name]:.1f}%; "
+            f"{name} SOC: {result.initial_soc_pct[name]:.1f}% -> economic terminal "
+            f"{result.economic_terminal_soc_pct[name]:.1f}%; physical minimum "
+            f"{result.minimum_physical_soc_pct[name]:.1f}%; "
             f"HEURISTIC SOFT RESERVE target {result.terminal_reserve_target_soc_pct[name]:.1f}% / "
-            f"{result.terminal_reserve_target_kwh[name]:.2f} kWh; actual stored "
-            f"{result.terminal_stored_kwh[name]:.2f} kWh valued at "
+            f"{result.terminal_reserve_target_kwh[name]:.2f} kWh; economic terminal stored "
+            f"{result.economic_terminal_stored_kwh[name]:.2f} kWh valued at "
             f"{result.terminal_value_czk_per_kwh[name]:.2f} CZK/kWh; "
             f"actual reserve shortfall {result.terminal_reserve_shortfall_kwh[name]:.2f} kWh; "
             f"charge/discharge limits {result.max_charge_power_w[name]:.0f}/"
             f"{result.max_discharge_power_w[name]:.0f} W ({result.power_limit_status[name].value}); "
             f"role {result.battery_role[name].value}"
+        )
+    lines.append("PHYSICAL GUARD END")
+    for name in names:
+        lines.append(
+            f"{name} SOC: physical terminal {result.physical_terminal_soc_pct[name]:.1f}%; "
+            f"physical terminal stored {result.physical_terminal_stored_kwh[name]:.2f} kWh"
         )
     for checkpoint in result.checkpoints:
         lines.append(
@@ -70,8 +80,8 @@ def render_text(result: PlannerResult) -> str:
     for slot in result.slots:
         row = [
             slot.timestamp.isoformat(),
-            f"{slot.sell_price_czk_per_kwh:.2f}",
-            f"{slot.buy_price_czk_per_kwh:.2f}",
+            _format_price(slot.sell_price_czk_per_kwh),
+            _format_price(slot.buy_price_czk_per_kwh),
             f"{slot.pv_forecast_kwh:.3f}",
             f"{slot.load_forecast_kwh:.3f}",
             f"{slot.planned_grid_import_kwh:.3f}",
@@ -91,6 +101,10 @@ def render_text(result: PlannerResult) -> str:
 
 def render_json(result: PlannerResult) -> str:
     return json.dumps(asdict(result), default=_json_default, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _format_price(value: float | None) -> str:
+    return "GUARD" if value is None else f"{value:.2f}"
 
 
 def _json_default(value: object) -> str:
