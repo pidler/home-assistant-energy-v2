@@ -23,6 +23,8 @@ Current development:
   inference so unchanged SOC and healthy exact-zero PV/grid states are not falsely rejected.
 - phase 5A adds an isolated, computation-only 15-minute LP trading planner with terminal value,
   rolling-replan triggers and human-readable reasons; it is not scheduled or deployed.
+- a pure Phase 5A DEYE power-state overlay identifies required-on, startup, ready and off-eligible
+  intervals without operating `switch.deye` or feeding state back into the trading LP.
 
 Safety boundary:
 
@@ -35,6 +37,8 @@ Safety boundary:
 
 See [`docs/phase-5a-trading-planner-shadow.md`](docs/phase-5a-trading-planner-shadow.md) for the
 planner's units, audited inputs, constraints and safety boundary.
+See [`docs/phase-5a-deye-power-state-shadow.md`](docs/phase-5a-deye-power-state-shadow.md) for the
+DEYE shadow power-state model, assumptions and physical validation still required.
 
 Confirmed phase 2 export parameters:
 

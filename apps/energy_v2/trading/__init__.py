@@ -21,14 +21,31 @@ from .models import (
     TradingSlotPlan,
 )
 from .planner import compare_plans, plan_trading_schedule
+from .power_state import (
+    AssumptionStatus,
+    DeyePowerState,
+    DeyePowerStateConfig,
+    DeyePowerStateSchedule,
+    DeyePowerStateSlot,
+    DeyeTelemetryExpectation,
+    OffEligibleWindow,
+    build_deye_power_state_schedule,
+)
 
 __all__ = [
     "BatteryParameters",
     "BatteryRole",
+    "AssumptionStatus",
     "CheckpointType",
     "ForecastQuality",
+    "DeyePowerState",
+    "DeyePowerStateConfig",
+    "DeyePowerStateSchedule",
+    "DeyePowerStateSlot",
+    "DeyeTelemetryExpectation",
     "PhysicalLimitStatus",
     "PlanComparison",
+    "OffEligibleWindow",
     "PlannerConfig",
     "PlannerInput",
     "PlannerResult",
@@ -38,6 +55,7 @@ __all__ = [
     "TradingSlotInput",
     "TradingSlotPlan",
     "assemble_slots",
+    "build_deye_power_state_schedule",
     "calculate_whole_site_load_w",
     "compare_plans",
     "plan_trading_schedule",
