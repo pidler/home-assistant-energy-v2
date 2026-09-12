@@ -62,7 +62,13 @@ def resolve_soc_policy(
             blocked[house.name].update(
                 index
                 for index, slot in enumerate(data.slots)
-                if assessment.trading_window_end <= slot.timestamp < assessment.recovery_deadline
+                if (
+                    assessment.trading_window_end <= slot.timestamp < assessment.recovery_deadline
+                    or (
+                        not morning_exception_enabled
+                        and assessment.trading_window_start <= slot.timestamp < assessment.trading_window_end
+                    )
+                )
             )
             if morning_exception_enabled:
                 checkpoints.append(
@@ -179,6 +185,8 @@ def _morning_assessments(
                 required_recovery_kwh=required,
                 candidate_feasible=False,
                 selected=False,
+                morning_start_soc_pct=0.0,
+                minimum_projected_soc_pct=0.0,
                 expected_recovery_soc_pct=0.0,
                 expected_recovery_time=None,
             )
@@ -193,16 +201,11 @@ def _apply_morning_floor(
     *,
     morning_exception_enabled: bool,
 ) -> None:
+    if not morning_exception_enabled:
+        return
     for index, timestamp in enumerate(state_timestamps):
-        if timestamp == assessment.trading_window_start:
-            floors[index] = max(floors[index], assessment.recovery_target_pct)
-        elif morning_exception_enabled and assessment.trading_window_start < timestamp <= assessment.trading_window_end:
+        if assessment.trading_window_start <= timestamp <= assessment.trading_window_end:
             floors[index] = max(floors[index], assessment.conditional_floor_pct)
-        elif (
-            not morning_exception_enabled
-            and assessment.trading_window_start < timestamp <= assessment.recovery_deadline
-        ):
-            floors[index] = max(floors[index], assessment.recovery_target_pct)
 
 
 def _first_state_at_or_after(

@@ -45,7 +45,9 @@ def render_text(result: PlannerResult) -> str:
         lines.append(
             f"MORNING POLICY {assessment.battery_name}: candidate feasible={assessment.candidate_feasible}, "
             f"selected={assessment.selected}, floor {assessment.conditional_floor_pct:.1f}%, recovery target "
-            f"{assessment.recovery_target_pct:.1f}% by {assessment.recovery_deadline.isoformat()}, projected "
+            f"{assessment.recovery_target_pct:.1f}% by {assessment.recovery_deadline.isoformat()}, morning start "
+            f"{assessment.morning_start_soc_pct:.1f}%, projected minimum "
+            f"{assessment.minimum_projected_soc_pct:.1f}%, projected recovery "
             f"{assessment.expected_recovery_soc_pct:.1f}%, PV surplus "
             f"{assessment.forecast_pv_surplus_for_recovery_kwh:.2f} kWh, charge-limited storable "
             f"{assessment.maximum_storable_recovery_kwh:.2f} kWh"

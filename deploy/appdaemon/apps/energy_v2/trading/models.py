@@ -293,6 +293,8 @@ class MorningRecoveryAssessment:
     required_recovery_kwh: float
     candidate_feasible: bool
     selected: bool
+    morning_start_soc_pct: float
+    minimum_projected_soc_pct: float
     expected_recovery_soc_pct: float
     expected_recovery_time: datetime | None
 

@@ -400,20 +400,17 @@ def _decorate_policy_reasons(result: PlannerResult) -> PlannerResult:
             else:
                 assessment = _assessment_for_slot(result, name, slot.timestamp)
                 if assessment is not None and assessment.selected:
-                    minimum = min(
-                        item.batteries[name].projected_soc_pct
-                        for item in result.slots
-                        if assessment.trading_window_start <= item.timestamp < assessment.trading_window_end
-                    )
                     recovered = (
                         assessment.expected_recovery_time.strftime("%H:%M")
                         if assessment.expected_recovery_time is not None
                         else assessment.recovery_deadline.strftime("%H:%M")
                     )
                     notes.append(
-                        f"EXPORT {name}: morning sell price {slot.sell_price_czk_per_kwh:.2f} CZK/kWh; conditional "
-                        f"{assessment.conditional_floor_pct:.0f}% trading floor is active; projected minimum SOC "
-                        f"{minimum:.1f}%; forecast recovery to {assessment.recovery_target_pct:.0f}% by {recovered}; "
+                        f"EXPORT {name}: entered morning at {assessment.morning_start_soc_pct:.1f}% after house "
+                        f"operation; sell price {slot.sell_price_czk_per_kwh:.2f} CZK/kWh; conditional "
+                        f"{assessment.conditional_floor_pct:.0f}% trading floor is active and export reduces the "
+                        f"projected minimum SOC to {assessment.minimum_projected_soc_pct:.1f}%; forecast recovery "
+                        f"to {assessment.recovery_target_pct:.0f}% by {recovered}; "
                         f"forecast PV surplus available for recovery "
                         f"{assessment.forecast_pv_surplus_for_recovery_kwh:.2f} kWh."
                     )
@@ -427,18 +424,27 @@ def _decorate_policy_reasons(result: PlannerResult) -> PlannerResult:
                 and (slot.batteries[name].discharge_to_export_kwh <= _EPSILON_KWH)
             ):
                 if assessment.candidate_feasible:
-                    detail = "the normal 30% policy has equal or higher solved economic value"
+                    detail = "the normal non-trading candidate has equal or higher solved economic value"
                 else:
                     detail = (
                         "the recovery candidate cannot restore SolaX to 30% by the configured deadline after "
                         "whole-site load, efficiency and charge-power limits"
                     )
-                notes.append(f"HOLD {name}: conditional 15% trading floor is not enabled because {detail}.")
+                notes.append(
+                    f"HOLD {name} TRADING: morning export is disabled and remaining SOC is available for house "
+                    f"operation; conditional 15% trading floor is not selected because {detail}."
+                )
             checkpoint = _next_binding_evening_checkpoint(result, name, slot.timestamp)
             if checkpoint is not None and slot.batteries[name].discharge_to_export_kwh <= _EPSILON_KWH:
                 notes.append(
                     f"HOLD {name}: {checkpoint.target_soc_pct:.0f}% evening house-reserve checkpoint limits "
                     "further discharge."
+                )
+            previous_checkpoint = _previous_evening_checkpoint(result, name, slot.timestamp)
+            if previous_checkpoint is not None and slot.batteries[name].discharge_to_load_kwh > _EPSILON_KWH:
+                notes.append(
+                    f"{name} is using the {previous_checkpoint.target_soc_pct:.0f}% evening reserve to cover "
+                    "forecast overnight house load."
                 )
         reason = slot.reason if not notes else f"{slot.reason} {' '.join(notes)}"
         slots.append(replace(slot, reason=reason))
@@ -469,6 +475,17 @@ def _next_binding_evening_checkpoint(result: PlannerResult, battery_name: str, t
         ),
         None,
     )
+
+
+def _previous_evening_checkpoint(result: PlannerResult, battery_name: str, timestamp: datetime):
+    matches = [
+        checkpoint
+        for checkpoint in result.checkpoints
+        if checkpoint.battery_name == battery_name
+        and checkpoint.checkpoint_type.value == "EVENING_RESERVE"
+        and checkpoint.timestamp <= timestamp
+    ]
+    return max(matches, key=lambda item: item.timestamp, default=None)
 
 
 def _checkpoint_result(
@@ -502,7 +519,13 @@ def _checkpoint_result(
 
 
 def _resolved_recovery(assessment, state_timestamps, stored, battery):
+    start_index = state_timestamps.index(assessment.trading_window_start)
+    end_index = state_timestamps.index(assessment.trading_window_end)
     deadline_index = state_timestamps.index(assessment.recovery_deadline)
+    morning_start_soc = 100 * _value(stored[start_index]) / battery.capacity_kwh
+    minimum_projected_soc = min(
+        100 * _value(stored[index]) / battery.capacity_kwh for index in range(start_index, end_index + 1)
+    )
     expected_soc = 100 * _value(stored[deadline_index]) / battery.capacity_kwh
     recovered_at = None
     for index, timestamp in enumerate(state_timestamps):
@@ -514,6 +537,8 @@ def _resolved_recovery(assessment, state_timestamps, stored, battery):
             break
     return replace(
         assessment,
+        morning_start_soc_pct=morning_start_soc,
+        minimum_projected_soc_pct=minimum_projected_soc,
         expected_recovery_soc_pct=expected_soc,
         expected_recovery_time=recovered_at,
     )

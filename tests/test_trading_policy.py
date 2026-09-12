@@ -70,13 +70,15 @@ def morning_input(
     load_recovery_kwh: float = 0.1,
     charge_w: float = 4_000,
     morning_price: float = 10,
+    initial_soc: float = 30,
+    morning_load_kwh: float = 0.0,
 ) -> PlannerInput:
     start = datetime(2026, 9, 14, 6, 0, tzinfo=UTC)
     prices = [morning_price] * 10 + [0.5] * 10
     pv = [0.0] * 10 + [pv_recovery_kwh] * 10
-    load = [0.0] * 10 + [load_recovery_kwh] * 10
+    load = [morning_load_kwh] * 10 + [load_recovery_kwh] * 10
     solax = battery("SolaX", BatteryRole.HOUSE_RESERVE_BATTERY, charge_w=charge_w)
-    return PlannerInput(slots(start, prices, pv=pv, load=load), (solax,), {"SolaX": 30})
+    return PlannerInput(slots(start, prices, pv=pv, load=load), (solax,), {"SolaX": initial_soc})
 
 
 def only_assessment(result):
@@ -110,7 +112,7 @@ def test_solax_evening_checkpoint_preserves_thirty_percent() -> None:
 
 
 def test_strong_pv_selects_morning_exception_and_recovers() -> None:
-    result = plan_trading_schedule(morning_input(pv_recovery_kwh=0.5), morning_config())
+    result = plan_trading_schedule(morning_input(pv_recovery_kwh=0.5, initial_soc=22), morning_config())
     assessment = only_assessment(result)
     morning_min = min(slot.batteries["SolaX"].projected_soc_pct for slot in result.slots[:10])
     assert assessment.candidate_feasible
@@ -118,16 +120,46 @@ def test_strong_pv_selects_morning_exception_and_recovers() -> None:
     assert morning_min == pytest.approx(15)
     assert assessment.expected_recovery_soc_pct >= 30
     assert assessment.expected_recovery_time is not None
-    assert "conditional 15% trading floor is active" in result.slots[0].reason
+    assert assessment.morning_start_soc_pct == pytest.approx(22)
+    export_reasons = [slot.reason for slot in result.slots[:10] if slot.batteries["SolaX"].discharge_to_export_kwh > 0]
+    assert any("entered morning at 22.0%" in reason for reason in export_reasons)
+    assert any("conditional 15% trading floor is active" in reason for reason in export_reasons)
 
 
 def test_weak_pv_keeps_normal_morning_floor() -> None:
-    result = plan_trading_schedule(morning_input(pv_recovery_kwh=0.1), morning_config())
+    result = plan_trading_schedule(morning_input(pv_recovery_kwh=0.1, initial_soc=22), morning_config())
     assessment = only_assessment(result)
     assert not assessment.candidate_feasible
     assert not assessment.selected
-    assert min(slot.batteries["SolaX"].projected_soc_pct for slot in result.slots[:10]) >= 30
+    assert min(slot.batteries["SolaX"].projected_soc_pct for slot in result.slots[:10]) == pytest.approx(22)
+    assert all(slot.batteries["SolaX"].discharge_to_export_kwh == pytest.approx(0) for slot in result.slots[:10])
     assert "cannot restore SolaX to 30%" in result.slots[0].reason
+
+
+def test_normal_candidate_allows_morning_house_load_discharge() -> None:
+    result = plan_trading_schedule(
+        morning_input(
+            pv_recovery_kwh=0,
+            load_recovery_kwh=0,
+            initial_soc=22,
+            morning_load_kwh=0.1,
+        ),
+        morning_config(),
+    )
+    assert sum(slot.batteries["SolaX"].discharge_to_load_kwh for slot in result.slots[:10]) > 0
+    assert sum(slot.batteries["SolaX"].discharge_to_export_kwh for slot in result.slots[:10]) == pytest.approx(0)
+    assert min(slot.batteries["SolaX"].projected_soc_pct for slot in result.slots[:10]) < 22
+    assert "remaining SOC is available for house operation" in result.slots[0].reason
+
+
+def test_evening_reserve_is_available_for_overnight_house_load() -> None:
+    start = datetime(2026, 9, 14, 18, 0, tzinfo=UTC)
+    solax = battery("SolaX", BatteryRole.HOUSE_RESERVE_BATTERY)
+    data = PlannerInput(slots(start, [0] * 4, load=[0.2] * 4), (solax,), {"SolaX": 30})
+    result = plan_trading_schedule(data, PlannerConfig(solax_evening_checkpoint_local_time=time(18, 0)))
+    assert result.checkpoints[0].actual_soc_pct == pytest.approx(30)
+    assert result.terminal_soc_pct["SolaX"] < 30
+    assert "using the 30% evening reserve" in result.slots[0].reason
 
 
 def test_charge_power_limit_blocks_morning_exception() -> None:

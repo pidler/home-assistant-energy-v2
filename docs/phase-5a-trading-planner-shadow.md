@@ -93,9 +93,14 @@ SolaX is the house-reserve battery. Its physical and generic terminal soft floor
 protection is expressed by timestamped `SocCheckpoint` constraints rather than an artificial horizon-edge reserve:
 
 - the configurable evening checkpoint targets 30% SOC;
-- the normal configured morning trading floor is 30%;
-- a candidate exception may use a 15% floor only within the configured morning window;
+- the normal candidate disables SolaX trading export during the configured morning window but permits discharge to
+  whole-site load down to the physical floor;
+- a candidate exception may additionally export using a 15% trading floor within the configured morning window;
 - the exception candidate has a hard 30% recovery checkpoint at the configured deadline.
+
+The evening 30% is energy intended for forecast overnight house consumption, not a morning floor. After the evening
+checkpoint, the LP may discharge SolaX to supply whole-site load. Morning SOC is therefore whatever remains after
+the modeled overnight trajectory, subject to the physical 10% floor.
 
 No policy time is silently invented. The caller supplies local `datetime.time` values and the planning-slot timezone
 is used. A time between quarter-hour boundaries maps deterministically to the first state timestamp at or after that
@@ -109,13 +114,15 @@ remains feasible and reports `EVENING_RESERVE_SHORTFALL` with target, projected 
 
 The planner solves two deterministic candidates using the same objective:
 
-1. normal policy: SolaX remains at or above 30% through the morning/recovery period;
-2. trading exception: SolaX starts the window at or above 30%, may fall to 15% inside the trading window, may not
-   export during recovery, and must reach 30% by the deadline.
+1. normal policy: SolaX trading export is blocked from morning-window start through recovery deadline, while
+   discharge to house load remains available down to the physical 10% floor;
+2. trading exception: SolaX starts at its actual SOC after overnight house consumption, may additionally export down
+   to a 15% trading floor inside the morning window, may not export during recovery, and must reach 30% by deadline.
 
 Before candidate 2 is solved, a conservative feasibility gate calculates per-slot usable PV surplus as
 `max(PV forecast - whole-site load forecast, 0)`, caps it by the SolaX charge-power limit, and applies charge
-efficiency. It must be sufficient for a full 15% to 30% recovery. This gate is not the final proof: the candidate's
+efficiency. It must conservatively be sufficient for a full 15% to 30% recovery, but it does not impose or assume a
+30% SOC at morning start. This gate is not the final proof: the candidate's
 hard recovery checkpoint is then solved inside the complete LP, so PV allocation, DEYE competition, load, export
 and all power constraints remain effective. Candidate 2 is selected only when it is feasible and has strictly higher
 objective value. Otherwise the normal 30% policy remains selected.
