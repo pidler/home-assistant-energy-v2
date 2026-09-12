@@ -211,6 +211,39 @@ def test_evening_reserve_blocks_trading_export_and_projects_guard_horizon() -> N
     assert "GUARD ONLY" in result.slots[12].reason
 
 
+def test_guard_consumes_physical_solax_reserve_but_not_economic_terminal_state() -> None:
+    start = datetime(2026, 9, 14, 21, 0, tzinfo=UTC)
+    solax = battery("SolaX", BatteryRole.HOUSE_RESERVE_BATTERY, discharge_w=10_000)
+    slots_with_overnight_load = tuple(
+        TradingSlotInput(
+            timestamp=start + timedelta(minutes=15 * index),
+            buy_price_czk_per_kwh=12.0 if index < 12 else None,
+            sell_price_czk_per_kwh=1.0 if index < 12 else None,
+            pv_forecast_kwh=0.0,
+            load_forecast_kwh=0.0 if index < 12 else 0.05,
+        )
+        for index in range(36)
+    )
+    data = PlannerInput(slots_with_overnight_load, (solax,), {"SolaX": 30})
+    config = PlannerConfig(
+        solax_evening_checkpoint_local_time=time(21, 0),
+        solax_morning_trading_start_local_time=time(6, 0),
+        solax_morning_trading_end_local_time=time(8, 30),
+        solax_recovery_deadline_local_time=time(11, 0),
+    )
+
+    result = plan_trading_schedule(data, config)
+
+    assert result.economic_terminal_soc_pct["SolaX"] == pytest.approx(30)
+    assert result.physical_terminal_soc_pct["SolaX"] == pytest.approx(17.368421, rel=1e-6)
+    assert result.terminal_soc_pct["SolaX"] == pytest.approx(30)
+    assert result.terminal_reserve_shortfall_kwh["SolaX"] == pytest.approx(0)
+    assert result.objective_value_czk == pytest.approx(
+        result.economic_terminal_stored_kwh["SolaX"] * result.terminal_value_czk_per_kwh["SolaX"]
+    )
+    assert sum(slot.batteries["SolaX"].discharge_to_load_kwh for slot in result.slots[12:]) == pytest.approx(1.2)
+
+
 def test_high_price_after_checkpoint_cannot_unlock_solax_but_deye_trades() -> None:
     start = datetime(2026, 9, 14, 21, 0, tzinfo=UTC)
     solax = battery("SolaX", BatteryRole.HOUSE_RESERVE_BATTERY, discharge_w=10_000)

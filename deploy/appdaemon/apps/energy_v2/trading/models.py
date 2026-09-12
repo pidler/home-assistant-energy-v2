@@ -334,6 +334,11 @@ class PlannerResult:
     economic_horizon_end: datetime
     slots: tuple[TradingSlotPlan, ...]
     initial_soc_pct: dict[str, float]
+    economic_terminal_soc_pct: dict[str, float]
+    economic_terminal_stored_kwh: dict[str, float]
+    physical_terminal_soc_pct: dict[str, float]
+    physical_terminal_stored_kwh: dict[str, float]
+    # Backward-compatible aliases with economic-terminal semantics.
     terminal_soc_pct: dict[str, float]
     terminal_stored_kwh: dict[str, float]
     minimum_physical_soc_pct: dict[str, float]

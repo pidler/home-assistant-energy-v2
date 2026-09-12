@@ -164,7 +164,15 @@ During guard-only slots:
 - a small role tie-break prefers the house-reserve battery over the trading battery for guard-only house load.
 
 `PlannerResult.economic_horizon_end` reports the priced boundary. `PlannerResult.horizon_end` reports the end of the
-physical trajectory. Continuation price and grid cashflow use priced slots only.
+physical trajectory. `economic_terminal_*` reports stored energy and SOC at the priced boundary and is the state
+used by continuation value, soft terminal reserve economics and manual-plan comparison. `physical_terminal_*`
+reports the state after the complete guard trajectory. The backward-compatible `terminal_*` fields have economic
+terminal semantics. Continuation price and grid cashflow use priced slots only.
+
+Guard import, role and trajectory penalties are deterministic solver tie-breaks for the physical simulation. They
+are not tariff inputs or real CZK cashflows and are excluded from `expected_net_grid_value_czk` and the reported
+economic objective. The priced solution is solved and fixed first; a second solver pass then chooses the deterministic
+guard trajectory without changing any priced-slot decision or the economic terminal state.
 
 ## Overnight SolaX reserve guard
 
