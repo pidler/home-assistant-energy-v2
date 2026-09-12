@@ -76,12 +76,52 @@ Default battery model for review:
 | Charge/discharge power | 10 kW / 10 kW | 10 kW / 10 kW |
 | Limit status | `MODEL_ASSUMPTION` | `MODEL_ASSUMPTION` |
 | Charge/discharge efficiency | 95% / 95% | 95% / 95% |
-| Default terminal reserve | 20% | 20% |
+| Role | `TRADING_BATTERY` | `HOUSE_RESERVE_BATTERY` |
+| Default terminal soft reserve | 10% | 10% |
 
 The 10 kW values are provisional `MODEL_ASSUMPTION` inputs, not confirmed or conservative physical limits. Charge
 and discharge limits are independently configurable for each battery. A value may be labelled
 `CONFIRMED_PHYSICAL_LIMIT` only after supporting evidence or controlled capability tests exist. The status and actual
 per-battery values are shown in the rendered plan summary.
+
+## Battery-role and SOC checkpoint policy
+
+DEYE is the trading battery. Its physical, economic and default terminal soft floors are all 10%, so the planner may
+discharge it to 10% when the solved economics justify that action. It has no house-load evening checkpoint.
+
+SolaX is the house-reserve battery. Its physical and generic terminal soft floors remain 10%, while operational
+protection is expressed by timestamped `SocCheckpoint` constraints rather than an artificial horizon-edge reserve:
+
+- the configurable evening checkpoint targets 30% SOC;
+- the normal configured morning trading floor is 30%;
+- a candidate exception may use a 15% floor only within the configured morning window;
+- the exception candidate has a hard 30% recovery checkpoint at the configured deadline.
+
+No policy time is silently invented. The caller supplies local `datetime.time` values and the planning-slot timezone
+is used. A time between quarter-hour boundaries maps deterministically to the first state timestamp at or after that
+time on the same local date. Checkpoints outside the visible horizon are not generated.
+
+An evening target that is optimistically reachable is a hard operational constraint. If initial SOC, available PV,
+duration or charge power make it unreachable, it becomes an explicit highly penalized soft checkpoint so the LP
+remains feasible and reports `EVENING_RESERVE_SHORTFALL` with target, projected SOC and shortfall.
+
+### Conditional morning candidate selection
+
+The planner solves two deterministic candidates using the same objective:
+
+1. normal policy: SolaX remains at or above 30% through the morning/recovery period;
+2. trading exception: SolaX starts the window at or above 30%, may fall to 15% inside the trading window, may not
+   export during recovery, and must reach 30% by the deadline.
+
+Before candidate 2 is solved, a conservative feasibility gate calculates per-slot usable PV surplus as
+`max(PV forecast - whole-site load forecast, 0)`, caps it by the SolaX charge-power limit, and applies charge
+efficiency. It must be sufficient for a full 15% to 30% recovery. This gate is not the final proof: the candidate's
+hard recovery checkpoint is then solved inside the complete LP, so PV allocation, DEYE competition, load, export
+and all power constraints remain effective. Candidate 2 is selected only when it is feasible and has strictly higher
+objective value. Otherwise the normal 30% policy remains selected.
+
+The result exposes battery roles, active per-slot SOC floors, checkpoint target/projected/shortfall values, candidate
+feasibility and selection, usable recovery energy, projected SOC at the deadline and expected recovery time.
 
 ## Terminal value
 
@@ -93,8 +133,9 @@ The edge window is configurable and an explicit continuation-price estimate may 
 median prevents an attractive opportunity earlier in the horizon from being incorrectly treated as value available
 after the horizon. The default factor is 0.60, with a 1 CZK/kWh floor.
 
-The 20% default is explicitly a configurable **HEURISTIC SOFT RESERVE**, not a physical minimum and not an
-economically derived guarantee. The physical minimum remains 10%. Missing soft reserve is penalized from the same
+The 10% role-policy default is explicitly a configurable **HEURISTIC SOFT RESERVE**, not a physical minimum and not
+an economically derived guarantee. It coincides with the 10% physical floor by default; SolaX house protection is
+provided by operational checkpoints. Missing soft reserve is penalized from the same
 edge price estimate. Unlike a hard constraint, this remains feasible when initial SOC is below the target and PV
 cannot restore it. `PlannerResult` separately returns physical minimum SOC, soft target SOC/kWh, actual terminal
 SOC/stored kWh, and actual shortfall; it never describes an unmet target as energy actually reserved.

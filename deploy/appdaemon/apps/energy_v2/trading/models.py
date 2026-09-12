@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from math import isfinite
 
 from ..models import StrEnum
@@ -25,6 +25,16 @@ class PhysicalLimitStatus(StrEnum):
     CONFIRMED_PHYSICAL_LIMIT = "CONFIRMED_PHYSICAL_LIMIT"
 
 
+class BatteryRole(StrEnum):
+    TRADING_BATTERY = "TRADING_BATTERY"
+    HOUSE_RESERVE_BATTERY = "HOUSE_RESERVE_BATTERY"
+
+
+class CheckpointType(StrEnum):
+    EVENING_RESERVE = "EVENING_RESERVE"
+    RECOVERY_TARGET = "RECOVERY_TARGET"
+
+
 @dataclass(frozen=True)
 class BatteryParameters:
     name: str
@@ -35,8 +45,9 @@ class BatteryParameters:
     max_discharge_power_w: float = 10_000.0
     charge_efficiency: float = 0.95
     discharge_efficiency: float = 0.95
-    terminal_reserve_soc_pct: float = 20.0
+    terminal_reserve_soc_pct: float = 10.0
     power_limit_status: PhysicalLimitStatus = PhysicalLimitStatus.MODEL_ASSUMPTION
+    role: BatteryRole = BatteryRole.TRADING_BATTERY
 
     def validate(self) -> None:
         values = (
@@ -61,6 +72,26 @@ class BatteryParameters:
             raise ValueError(f"{self.name} efficiencies must be in (0, 1]")
         if not isinstance(self.power_limit_status, PhysicalLimitStatus):
             raise ValueError(f"{self.name} power limit status must be explicit")
+        if not isinstance(self.role, BatteryRole):
+            raise ValueError(f"{self.name} battery role must be explicit")
+
+
+@dataclass(frozen=True)
+class SocCheckpoint:
+    battery_name: str
+    timestamp: datetime
+    minimum_soc_pct: float
+    checkpoint_type: CheckpointType
+    reason: str
+    hard: bool = True
+
+    def validate(self, battery: BatteryParameters) -> None:
+        if self.timestamp.tzinfo is None:
+            raise ValueError("SOC checkpoint timestamps must be timezone-aware")
+        if not battery.minimum_soc_pct <= self.minimum_soc_pct <= battery.maximum_soc_pct:
+            raise ValueError(f"SOC checkpoint outside limits for {battery.name}")
+        if not self.reason:
+            raise ValueError("SOC checkpoint reason is required")
 
 
 @dataclass(frozen=True)
@@ -101,6 +132,14 @@ class PlannerConfig:
     terminal_reserve_shortfall_factor: float = 1.05
     terminal_price_lookback_hours: float = 3.0
     terminal_continuation_price_czk_per_kwh: float | None = None
+    solax_evening_checkpoint_local_time: time | None = None
+    solax_evening_reserve_soc_pct: float = 30.0
+    solax_morning_trading_start_local_time: time | None = None
+    solax_morning_trading_end_local_time: time | None = None
+    solax_recovery_deadline_local_time: time | None = None
+    solax_morning_conditional_floor_pct: float = 15.0
+    solax_recovery_target_soc_pct: float = 30.0
+    operational_checkpoint_shortfall_penalty_czk_per_kwh: float = 1_000.0
 
     def validate(self) -> None:
         values = (
@@ -113,6 +152,10 @@ class PlannerConfig:
             self.terminal_value_floor_czk_per_kwh,
             self.terminal_reserve_shortfall_factor,
             self.terminal_price_lookback_hours,
+            self.solax_evening_reserve_soc_pct,
+            self.solax_morning_conditional_floor_pct,
+            self.solax_recovery_target_soc_pct,
+            self.operational_checkpoint_shortfall_penalty_czk_per_kwh,
         )
         if not all(isfinite(value) for value in values):
             raise ValueError("planner configuration must be finite")
@@ -130,12 +173,29 @@ class PlannerConfig:
             raise ValueError("terminal value floor must be non-negative")
         if self.terminal_reserve_shortfall_factor < 1:
             raise ValueError("terminal reserve shortfall factor must be at least one")
+        if self.operational_checkpoint_shortfall_penalty_czk_per_kwh <= 0:
+            raise ValueError("operational checkpoint shortfall penalty must be positive")
         if self.terminal_price_lookback_hours <= 0:
             raise ValueError("terminal price lookback must be positive")
         if self.terminal_continuation_price_czk_per_kwh is not None and not isfinite(
             self.terminal_continuation_price_czk_per_kwh
         ):
             raise ValueError("explicit terminal continuation price must be finite")
+        morning_times = (
+            self.solax_morning_trading_start_local_time,
+            self.solax_morning_trading_end_local_time,
+            self.solax_recovery_deadline_local_time,
+        )
+        if any(value is not None for value in morning_times) and not all(value is not None for value in morning_times):
+            raise ValueError("morning trading start, end and recovery deadline must be configured together")
+        if all(value is not None for value in morning_times) and not (
+            morning_times[0] < morning_times[1] < morning_times[2]  # type: ignore[operator]
+        ):
+            raise ValueError("morning trading start, end and recovery deadline must be ordered within one day")
+        if not 10 <= self.solax_morning_conditional_floor_pct <= self.solax_recovery_target_soc_pct <= 100:
+            raise ValueError("SolaX morning floor/recovery target are inconsistent")
+        if not 10 <= self.solax_evening_reserve_soc_pct <= 100:
+            raise ValueError("SolaX evening reserve must be between 10 and 100 percent")
 
 
 @dataclass(frozen=True)
@@ -145,6 +205,7 @@ class PlannerInput:
     initial_soc_pct: dict[str, float]
     load_forecast_quality: ForecastQuality = ForecastQuality.SIMPLE_BASELINE
     generated_at: datetime | None = None
+    soc_checkpoints: tuple[SocCheckpoint, ...] = ()
 
     def validate(self) -> None:
         if not self.slots:
@@ -168,6 +229,12 @@ class PlannerInput:
                 raise ValueError(f"initial SOC missing for {battery.name}")
             if not isfinite(soc) or not battery.minimum_soc_pct <= soc <= battery.maximum_soc_pct:
                 raise ValueError(f"initial SOC outside limits for {battery.name}")
+        battery_map = {battery.name: battery for battery in self.batteries}
+        for checkpoint in self.soc_checkpoints:
+            battery = battery_map.get(checkpoint.battery_name)
+            if battery is None:
+                raise ValueError(f"SOC checkpoint battery is unknown: {checkpoint.battery_name}")
+            checkpoint.validate(battery)
 
 
 @dataclass(frozen=True)
@@ -177,6 +244,7 @@ class BatterySlotPlan:
     discharge_to_export_kwh: float
     planned_power_w: float
     projected_soc_pct: float
+    active_soc_floor_pct: float
 
 
 @dataclass(frozen=True)
@@ -201,6 +269,35 @@ class ImportantDecision:
 
 
 @dataclass(frozen=True)
+class SocCheckpointResult:
+    battery_name: str
+    timestamp: datetime
+    checkpoint_type: CheckpointType
+    target_soc_pct: float
+    actual_soc_pct: float
+    shortfall_pct: float
+    hard: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class MorningRecoveryAssessment:
+    battery_name: str
+    trading_window_start: datetime
+    trading_window_end: datetime
+    recovery_deadline: datetime
+    conditional_floor_pct: float
+    recovery_target_pct: float
+    forecast_pv_surplus_for_recovery_kwh: float
+    maximum_storable_recovery_kwh: float
+    required_recovery_kwh: float
+    candidate_feasible: bool
+    selected: bool
+    expected_recovery_soc_pct: float
+    expected_recovery_time: datetime | None
+
+
+@dataclass(frozen=True)
 class PlannerResult:
     generated_at: datetime
     horizon_start: datetime
@@ -219,6 +316,9 @@ class PlannerResult:
     max_charge_power_w: dict[str, float]
     max_discharge_power_w: dict[str, float]
     power_limit_status: dict[str, PhysicalLimitStatus]
+    battery_role: dict[str, BatteryRole]
+    checkpoints: tuple[SocCheckpointResult, ...]
+    morning_recovery: dict[str, MorningRecoveryAssessment]
     expected_export_kwh: float
     expected_import_kwh: float
     expected_revenue_czk: float

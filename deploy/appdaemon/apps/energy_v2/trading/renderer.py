@@ -31,7 +31,24 @@ def render_text(result: PlannerResult) -> str:
             f"{result.terminal_value_czk_per_kwh[name]:.2f} CZK/kWh; "
             f"actual reserve shortfall {result.terminal_reserve_shortfall_kwh[name]:.2f} kWh; "
             f"charge/discharge limits {result.max_charge_power_w[name]:.0f}/"
-            f"{result.max_discharge_power_w[name]:.0f} W ({result.power_limit_status[name].value})"
+            f"{result.max_discharge_power_w[name]:.0f} W ({result.power_limit_status[name].value}); "
+            f"role {result.battery_role[name].value}"
+        )
+    for checkpoint in result.checkpoints:
+        lines.append(
+            f"SOC CHECKPOINT {checkpoint.checkpoint_type.value} {checkpoint.battery_name} at "
+            f"{checkpoint.timestamp.isoformat()}: target {checkpoint.target_soc_pct:.1f}%, projected "
+            f"{checkpoint.actual_soc_pct:.1f}%, shortfall {checkpoint.shortfall_pct:.1f}%, "
+            f"{'HARD' if checkpoint.hard else 'OPERATIONAL SHORTFALL'}; {checkpoint.reason}"
+        )
+    for assessment in result.morning_recovery.values():
+        lines.append(
+            f"MORNING POLICY {assessment.battery_name}: candidate feasible={assessment.candidate_feasible}, "
+            f"selected={assessment.selected}, floor {assessment.conditional_floor_pct:.1f}%, recovery target "
+            f"{assessment.recovery_target_pct:.1f}% by {assessment.recovery_deadline.isoformat()}, projected "
+            f"{assessment.expected_recovery_soc_pct:.1f}%, PV surplus "
+            f"{assessment.forecast_pv_surplus_for_recovery_kwh:.2f} kWh, charge-limited storable "
+            f"{assessment.maximum_storable_recovery_kwh:.2f} kWh"
         )
     header = [
         "TIME",
@@ -42,6 +59,7 @@ def render_text(result: PlannerResult) -> str:
         "IMPORT",
         "EXPORT",
         *(f"{name} SOC" for name in names),
+        *(f"{name} FLOOR" for name in names),
         *(f"{name} W" for name in names),
         "ACTION",
         "REASON",
@@ -57,6 +75,7 @@ def render_text(result: PlannerResult) -> str:
             f"{slot.planned_grid_import_kwh:.3f}",
             f"{slot.planned_grid_export_kwh:.3f}",
             *(f"{slot.batteries[name].projected_soc_pct:.1f}%" for name in names),
+            *(f"{slot.batteries[name].active_soc_floor_pct:.1f}%" for name in names),
             *(f"{slot.batteries[name].planned_power_w:.0f}" for name in names),
             slot.action.value,
             slot.reason,
