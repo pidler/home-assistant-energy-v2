@@ -97,23 +97,28 @@ class SocCheckpoint:
 @dataclass(frozen=True)
 class TradingSlotInput:
     timestamp: datetime
-    buy_price_czk_per_kwh: float
-    sell_price_czk_per_kwh: float
+    buy_price_czk_per_kwh: float | None
+    sell_price_czk_per_kwh: float | None
     pv_forecast_kwh: float
     load_forecast_kwh: float
+
+    @property
+    def is_guard_only(self) -> bool:
+        return self.buy_price_czk_per_kwh is None
 
     def validate(self) -> None:
         if self.timestamp.tzinfo is None:
             raise ValueError("slot timestamps must be timezone-aware")
-        values = (
-            self.buy_price_czk_per_kwh,
-            self.sell_price_czk_per_kwh,
-            self.pv_forecast_kwh,
-            self.load_forecast_kwh,
-        )
+        if (self.buy_price_czk_per_kwh is None) != (self.sell_price_czk_per_kwh is None):
+            raise ValueError("buy and sell prices must both be available or both be unavailable")
+        values = (self.pv_forecast_kwh, self.load_forecast_kwh)
+        if not self.is_guard_only:
+            values += (self.buy_price_czk_per_kwh, self.sell_price_czk_per_kwh)  # type: ignore[arg-type]
         if not all(isfinite(value) for value in values):
             raise ValueError("slot values must be finite")
-        if self.buy_price_czk_per_kwh < self.sell_price_czk_per_kwh:
+        if (
+            not self.is_guard_only and self.buy_price_czk_per_kwh < self.sell_price_czk_per_kwh  # type: ignore[operator]
+        ):
             raise ValueError("buy price must be at least sell price for a linear net-meter model")
         if self.pv_forecast_kwh < 0 or self.load_forecast_kwh < 0:
             raise ValueError("PV and load forecasts must be non-negative")
@@ -140,6 +145,8 @@ class PlannerConfig:
     solax_morning_conditional_floor_pct: float = 15.0
     solax_recovery_target_soc_pct: float = 30.0
     operational_checkpoint_shortfall_penalty_czk_per_kwh: float = 1_000.0
+    guard_grid_import_penalty_czk_per_kwh: float = 1_000.0
+    guard_trading_battery_load_tie_break_czk_per_kwh: float = 0.001
 
     def validate(self) -> None:
         values = (
@@ -156,6 +163,8 @@ class PlannerConfig:
             self.solax_morning_conditional_floor_pct,
             self.solax_recovery_target_soc_pct,
             self.operational_checkpoint_shortfall_penalty_czk_per_kwh,
+            self.guard_grid_import_penalty_czk_per_kwh,
+            self.guard_trading_battery_load_tie_break_czk_per_kwh,
         )
         if not all(isfinite(value) for value in values):
             raise ValueError("planner configuration must be finite")
@@ -175,6 +184,10 @@ class PlannerConfig:
             raise ValueError("terminal reserve shortfall factor must be at least one")
         if self.operational_checkpoint_shortfall_penalty_czk_per_kwh <= 0:
             raise ValueError("operational checkpoint shortfall penalty must be positive")
+        if self.guard_grid_import_penalty_czk_per_kwh <= 0:
+            raise ValueError("guard grid import penalty must be positive")
+        if self.guard_trading_battery_load_tie_break_czk_per_kwh < 0:
+            raise ValueError("guard trading-battery load tie-break must be non-negative")
         if self.terminal_price_lookback_hours <= 0:
             raise ValueError("terminal price lookback must be positive")
         if self.terminal_continuation_price_czk_per_kwh is not None and not isfinite(
@@ -196,6 +209,12 @@ class PlannerConfig:
             raise ValueError("SolaX morning floor/recovery target are inconsistent")
         if not 10 <= self.solax_evening_reserve_soc_pct <= 100:
             raise ValueError("SolaX evening reserve must be between 10 and 100 percent")
+        if (
+            self.solax_evening_checkpoint_local_time is not None
+            and self.solax_morning_trading_start_local_time is not None
+            and self.solax_evening_checkpoint_local_time == self.solax_morning_trading_start_local_time
+        ):
+            raise ValueError("evening checkpoint and morning trading start must differ")
 
 
 @dataclass(frozen=True)
@@ -222,6 +241,11 @@ class PlannerInput:
             raise ValueError("slots must have continuous 15-minute cadence")
         for slot in self.slots:
             slot.validate()
+        priced = [index for index, slot in enumerate(self.slots) if not slot.is_guard_only]
+        if not priced:
+            raise ValueError("at least one economically priced slot is required")
+        if priced != list(range(priced[-1] + 1)):
+            raise ValueError("guard-only slots must follow the continuous economic horizon")
         for battery in self.batteries:
             battery.validate()
             soc = self.initial_soc_pct.get(battery.name)
@@ -245,13 +269,15 @@ class BatterySlotPlan:
     planned_power_w: float
     projected_soc_pct: float
     active_soc_floor_pct: float
+    trading_export_blocked: bool
+    overnight_trading_export_blocked: bool
 
 
 @dataclass(frozen=True)
 class TradingSlotPlan:
     timestamp: datetime
-    buy_price_czk_per_kwh: float
-    sell_price_czk_per_kwh: float
+    buy_price_czk_per_kwh: float | None
+    sell_price_czk_per_kwh: float | None
     pv_forecast_kwh: float
     load_forecast_kwh: float
     planned_grid_import_kwh: float
@@ -259,6 +285,7 @@ class TradingSlotPlan:
     batteries: dict[str, BatterySlotPlan]
     action: TradingAction
     reason: str
+    guard_only: bool
 
 
 @dataclass(frozen=True)
@@ -304,6 +331,7 @@ class PlannerResult:
     generated_at: datetime
     horizon_start: datetime
     horizon_end: datetime
+    economic_horizon_end: datetime
     slots: tuple[TradingSlotPlan, ...]
     initial_soc_pct: dict[str, float]
     terminal_soc_pct: dict[str, float]

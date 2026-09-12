@@ -20,6 +20,7 @@ class ResolvedSocPolicy:
     morning_recovery: dict[str, MorningRecoveryAssessment]
     state_floors_pct: dict[str, tuple[float, ...]]
     recovery_export_blocked_indexes: dict[str, frozenset[int]]
+    overnight_export_blocked_indexes: dict[str, frozenset[int]]
 
 
 def resolve_soc_policy(
@@ -44,6 +45,7 @@ def resolve_soc_policy(
     checkpoints = list(data.soc_checkpoints)
     recovery: dict[str, MorningRecoveryAssessment] = {}
     blocked: dict[str, set[int]] = {name: set() for name in batteries}
+    overnight_blocked: dict[str, set[int]] = {name: set() for name in batteries}
 
     house_batteries = [battery for battery in data.batteries if battery.role is BatteryRole.HOUSE_RESERVE_BATTERY]
     if len(house_batteries) > 1:
@@ -51,6 +53,8 @@ def resolve_soc_policy(
     if house_batteries:
         house = house_batteries[0]
         checkpoints.extend(_evening_checkpoints(data, config, house, state_timestamps))
+        overnight_blocked[house.name].update(_overnight_export_blocked_indexes(data, config))
+        blocked[house.name].update(overnight_blocked[house.name])
         for assessment in _morning_assessments(data, config, house, state_timestamps):
             key = f"{house.name}:{assessment.trading_window_start.date().isoformat()}"
             recovery[key] = assessment
@@ -89,7 +93,27 @@ def resolve_soc_policy(
         morning_recovery=recovery,
         state_floors_pct={name: tuple(values) for name, values in floors.items()},
         recovery_export_blocked_indexes={name: frozenset(values) for name, values in blocked.items()},
+        overnight_export_blocked_indexes={name: frozenset(values) for name, values in overnight_blocked.items()},
     )
+
+
+def _overnight_export_blocked_indexes(data: PlannerInput, config: PlannerConfig) -> set[int]:
+    evening = config.solax_evening_checkpoint_local_time
+    if evening is None:
+        return set()
+    morning = config.solax_morning_trading_start_local_time
+    result: set[int] = set()
+    for index, slot in enumerate(data.slots):
+        local_time = slot.timestamp.timetz().replace(tzinfo=None)
+        if morning is None:
+            blocked = local_time >= evening
+        elif evening < morning:
+            blocked = evening <= local_time < morning
+        else:
+            blocked = local_time >= evening or local_time < morning
+        if blocked:
+            result.add(index)
+    return result
 
 
 def has_configured_morning_policy(data: PlannerInput, config: PlannerConfig) -> bool:

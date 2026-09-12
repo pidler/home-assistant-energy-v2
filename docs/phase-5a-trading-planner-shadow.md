@@ -147,6 +147,35 @@ edge price estimate. Unlike a hard constraint, this remains feasible when initia
 cannot restore it. `PlannerResult` separately returns physical minimum SOC, soft target SOC/kWh, actual terminal
 SOC/stored kWh, and actual shortfall; it never describes an unmet target as energy actually reserved.
 
+## Economic and physical guard horizons
+
+The economic horizon ends after the last continuous slot with aligned buy and sell prices. If PV and whole-site
+load forecasts continue beyond that point, callers may append a physical guard horizon with `assemble_slots(...,
+guard_until=...)`. Guard slots keep both price fields explicitly `None`; the planner never substitutes a synthetic
+zero price.
+
+During guard-only slots:
+
+- all PV and battery trading export is constrained to zero;
+- grid-to-battery charging remains structurally impossible;
+- PV may supply load or charge batteries;
+- batteries may supply house load down to their physical floors;
+- residual load may be imported, with a non-price physical-balancing penalty that prefers available battery energy;
+- a small role tie-break prefers the house-reserve battery over the trading battery for guard-only house load.
+
+`PlannerResult.economic_horizon_end` reports the priced boundary. `PlannerResult.horizon_end` reports the end of the
+physical trajectory. Continuation price and grid cashflow use priced slots only.
+
+## Overnight SolaX reserve guard
+
+For `HOUSE_RESERVE_BATTERY`, the evening checkpoint is not a momentary gate. From the configured evening checkpoint
+until the configured morning trading start, battery trading export is forbidden even when a known sell price is very
+high. Discharge to forecast whole-site load and charging from PV remain allowed. At morning start the overnight block
+ends and the existing normal/conditional morning-candidate policy becomes authoritative.
+
+This allows a run with prices ending at midnight to retain a physical trajectory through 00:00, 03:00 and morning
+start without inventing prices or letting the evening house reserve leak into night trading.
+
 ## Rolling re-optimization
 
 `replan_reasons()` requests a new solve for any of:

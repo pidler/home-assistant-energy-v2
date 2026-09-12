@@ -33,6 +33,17 @@ def explain_slot(
     target = sum(context.terminal_reserve_target_kwh.values())
     future_export = context.future_planned_battery_export_kwh
     future_price = context.future_export_price_czk_per_kwh
+    if slot.is_guard_only:
+        if action is TradingAction.CHARGE_FROM_PV:
+            activity = "PV surplus may charge batteries"
+        elif action is TradingAction.IMPORT_FOR_LOAD:
+            activity = "grid supplies load that PV and available battery energy cannot cover"
+        else:
+            activity = "PV and batteries balance forecast house load"
+        return (
+            "GUARD ONLY: price is unavailable, so trading export and grid-to-battery charging are blocked; "
+            f"{activity}; current {state}"
+        )
     if action is TradingAction.CHARGE_FROM_PV:
         if future_export > 1e-6 and future_price is not None:
             return (
@@ -57,7 +68,12 @@ def explain_slot(
         )
     if action is TradingAction.IMPORT_FOR_LOAD:
         return f"Grid supplies residual whole-site load; summer policy forbids grid battery charging; current {state}"
-    if future_export > 1e-6 and future_price is not None and future_price > slot.sell_price_czk_per_kwh + 0.01:
+    if (
+        future_export > 1e-6
+        and future_price is not None
+        and slot.sell_price_czk_per_kwh is not None
+        and future_price > slot.sell_price_czk_per_kwh + 0.01
+    ):
         return (
             f"Solved plan holds energy now and later exports {future_export:.2f} battery kWh at up to "
             f"{future_price:.2f} CZK/kWh versus {slot.sell_price_czk_per_kwh:.2f} now; forecast PV before that "

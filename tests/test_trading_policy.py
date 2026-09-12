@@ -54,6 +54,28 @@ def slots(
     )
 
 
+def priced_then_guard_slots(
+    start: datetime,
+    *,
+    priced_count: int,
+    total_count: int,
+    sell_price: float = 1.0,
+    load_kwh: float = 0.0,
+    pv_by_index: dict[int, float] | None = None,
+) -> tuple[TradingSlotInput, ...]:
+    pv_by_index = pv_by_index or {}
+    return tuple(
+        TradingSlotInput(
+            timestamp=start + timedelta(minutes=15 * index),
+            buy_price_czk_per_kwh=max(12.0, sell_price + 1.0) if index < priced_count else None,
+            sell_price_czk_per_kwh=sell_price if index < priced_count else None,
+            pv_forecast_kwh=pv_by_index.get(index, 0.0),
+            load_forecast_kwh=load_kwh,
+        )
+        for index in range(total_count)
+    )
+
+
 def morning_config() -> PlannerConfig:
     return PlannerConfig(
         solax_morning_trading_start_local_time=time(6, 0),
@@ -160,6 +182,90 @@ def test_evening_reserve_is_available_for_overnight_house_load() -> None:
     assert result.checkpoints[0].actual_soc_pct == pytest.approx(30)
     assert result.terminal_soc_pct["SolaX"] < 30
     assert "using the 30% evening reserve" in result.slots[0].reason
+
+
+def test_evening_reserve_blocks_trading_export_and_projects_guard_horizon() -> None:
+    start = datetime(2026, 9, 14, 21, 0, tzinfo=UTC)
+    solax = battery("SolaX", BatteryRole.HOUSE_RESERVE_BATTERY, discharge_w=10_000)
+    data = PlannerInput(
+        priced_then_guard_slots(start, priced_count=12, total_count=36, sell_price=100, load_kwh=0.05),
+        (solax,),
+        {"SolaX": 30},
+    )
+    config = PlannerConfig(
+        solax_evening_checkpoint_local_time=time(21, 0),
+        solax_morning_trading_start_local_time=time(6, 0),
+        solax_morning_trading_end_local_time=time(8, 30),
+        solax_recovery_deadline_local_time=time(11, 0),
+    )
+
+    result = plan_trading_schedule(data, config)
+
+    assert result.economic_horizon_end == datetime(2026, 9, 15, 0, 0, tzinfo=UTC)
+    assert result.horizon_end == datetime(2026, 9, 15, 6, 0, tzinfo=UTC)
+    assert all(slot.batteries["SolaX"].discharge_to_export_kwh == pytest.approx(0) for slot in result.slots)
+    assert sum(slot.batteries["SolaX"].discharge_to_load_kwh for slot in result.slots) > 0
+    assert result.slots[11].batteries["SolaX"].projected_soc_pct < 30
+    assert result.slots[-1].batteries["SolaX"].projected_soc_pct < result.slots[11].batteries["SolaX"].projected_soc_pct
+    assert "evening reserve is dedicated to overnight house operation" in result.slots[4].reason
+    assert "GUARD ONLY" in result.slots[12].reason
+
+
+def test_high_price_after_checkpoint_cannot_unlock_solax_but_deye_trades() -> None:
+    start = datetime(2026, 9, 14, 21, 0, tzinfo=UTC)
+    solax = battery("SolaX", BatteryRole.HOUSE_RESERVE_BATTERY, discharge_w=10_000)
+    deye = battery("DEYE", BatteryRole.TRADING_BATTERY, discharge_w=10_000)
+    prices = [1.0, 1.0, 1.0, 1.0, 100.0, 1.0]
+    data = PlannerInput(slots(start, prices), (deye, solax), {"DEYE": 60, "SolaX": 30})
+    config = PlannerConfig(
+        solax_evening_checkpoint_local_time=time(21, 0),
+        solax_morning_trading_start_local_time=time(6, 0),
+        solax_morning_trading_end_local_time=time(8, 30),
+        solax_recovery_deadline_local_time=time(11, 0),
+    )
+
+    result = plan_trading_schedule(data, config)
+
+    peak = result.slots[4]
+    assert peak.batteries["SolaX"].discharge_to_export_kwh == pytest.approx(0)
+    assert peak.batteries["DEYE"].discharge_to_export_kwh > 0
+
+
+def test_morning_window_releases_overnight_block_for_recovery_candidate() -> None:
+    start = datetime(2026, 9, 14, 21, 0, tzinfo=UTC)
+    total_count = 56
+    prices = [0.0] * total_count
+    pv = [0.0] * total_count
+    morning_start_index = 36
+    morning_end_index = 46
+    recovery_deadline_index = 56
+    for index in range(morning_start_index, morning_end_index):
+        prices[index] = 10.0
+    for index in range(morning_end_index, recovery_deadline_index):
+        pv[index] = 0.5
+    solax = battery("SolaX", BatteryRole.HOUSE_RESERVE_BATTERY, charge_w=4_000, discharge_w=10_000)
+    data = PlannerInput(slots(start, prices, pv=pv), (solax,), {"SolaX": 30})
+    config = PlannerConfig(
+        solax_evening_checkpoint_local_time=time(21, 0),
+        solax_morning_trading_start_local_time=time(6, 0),
+        solax_morning_trading_end_local_time=time(8, 30),
+        solax_recovery_deadline_local_time=time(11, 0),
+    )
+
+    result = plan_trading_schedule(data, config)
+
+    assert all(
+        slot.batteries["SolaX"].discharge_to_export_kwh == pytest.approx(0)
+        for slot in result.slots[:morning_start_index]
+    )
+    assert (
+        sum(
+            slot.batteries["SolaX"].discharge_to_export_kwh
+            for slot in result.slots[morning_start_index:morning_end_index]
+        )
+        > 0
+    )
+    assert only_assessment(result).selected
 
 
 def test_charge_power_limit_blocks_morning_exception() -> None:

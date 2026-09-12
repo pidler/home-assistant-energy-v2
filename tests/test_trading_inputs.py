@@ -43,6 +43,35 @@ def test_assemble_slots_uses_full_common_horizon() -> None:
     assert slots[-1].timestamp == timestamps[-1]
 
 
+def test_assemble_slots_appends_explicit_guard_only_horizon() -> None:
+    start = datetime(2026, 9, 11, 23, 30, tzinfo=UTC)
+    priced = [start, start + timedelta(minutes=15)]
+    physical = priced + [start + timedelta(minutes=30), start + timedelta(minutes=45)]
+    buy = {timestamp: 8.0 for timestamp in priced}
+    sell = {timestamp: 4.0 for timestamp in priced}
+    pv = {timestamp: 0.0 for timestamp in physical}
+    load = {timestamp: 0.1 for timestamp in physical}
+
+    slots = assemble_slots(buy, sell, pv, load, guard_until=start + timedelta(hours=1))
+
+    assert len(slots) == 4
+    assert not slots[1].is_guard_only
+    assert slots[2].is_guard_only
+    assert slots[2].buy_price_czk_per_kwh is None
+    assert slots[2].sell_price_czk_per_kwh is None
+
+
+def test_assemble_slots_rejects_missing_guard_forecast() -> None:
+    start = datetime(2026, 9, 11, 23, 45, tzinfo=UTC)
+    buy = {start: 8.0}
+    sell = {start: 4.0}
+    pv = {start: 0.0}
+    load = {start: 0.1}
+
+    with pytest.raises(ValueError, match="PV/load data missing for guard slot"):
+        assemble_slots(buy, sell, pv, load, guard_until=start + timedelta(minutes=30))
+
+
 def test_solcast_resampling_preserves_energy() -> None:
     start = datetime(2026, 9, 11, tzinfo=UTC)
     source = [

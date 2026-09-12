@@ -305,3 +305,31 @@ def test_positive_cycle_penalty_avoids_simultaneous_charge_and_discharge() -> No
         battery_plan = slot.batteries["DEYE"]
         discharged = battery_plan.discharge_to_load_kwh + battery_plan.discharge_to_export_kwh
         assert not (battery_plan.charge_from_pv_kwh > 1e-6 and discharged > 1e-6)
+
+
+def test_guard_only_slot_blocks_export_but_keeps_pv_charging_active() -> None:
+    item = battery(reserve=10)
+    slots = (
+        TradingSlotInput(START, 8.0, 1.0, 0.0, 0.0),
+        TradingSlotInput(START + timedelta(minutes=15), None, None, 1.0, 0.0),
+    )
+    data = PlannerInput(slots, (item,), {"DEYE": 10})
+
+    result = plan_trading_schedule(data)
+    guard = result.slots[1]
+
+    assert result.economic_horizon_end == START + timedelta(minutes=15)
+    assert result.horizon_end == START + timedelta(minutes=30)
+    assert guard.guard_only
+    assert guard.planned_grid_export_kwh == pytest.approx(0)
+    assert guard.batteries["DEYE"].discharge_to_export_kwh == pytest.approx(0)
+    assert guard.batteries["DEYE"].charge_from_pv_kwh > 0
+    assert "price is unavailable" in guard.reason
+    assert "GUARD" in render_text(result)
+
+
+def test_guard_only_slot_requires_both_prices_to_be_unavailable() -> None:
+    item = battery(reserve=10)
+    bad = TradingSlotInput(START, None, 1.0, 0.0, 0.0)
+    with pytest.raises(ValueError, match="both be available or both be unavailable"):
+        plan_trading_schedule(PlannerInput((bad,), (item,), {"DEYE": 10}))
