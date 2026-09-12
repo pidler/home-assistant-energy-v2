@@ -30,7 +30,8 @@ def resolve_soc_policy(
 ) -> ResolvedSocPolicy:
     """Resolve role policy for one deterministic LP candidate.
 
-    The normal candidate keeps SolaX at 30%. The exception candidate permits
+    The normal candidate blocks SolaX trading export during the morning window
+    while allowing house-load discharge down to the physical floor. The exception candidate permits
     15% inside the configured trading window and adds a hard 30% recovery
     checkpoint. Complete LP feasibility decides whether recovery is possible.
     """

@@ -125,7 +125,7 @@ efficiency. It must conservatively be sufficient for a full 15% to 30% recovery,
 30% SOC at morning start. This gate is not the final proof: the candidate's
 hard recovery checkpoint is then solved inside the complete LP, so PV allocation, DEYE competition, load, export
 and all power constraints remain effective. Candidate 2 is selected only when it is feasible and has strictly higher
-objective value. Otherwise the normal 30% policy remains selected.
+objective value. Otherwise the normal non-trading policy remains selected.
 
 The result exposes battery roles, active per-slot SOC floors, checkpoint target/projected/shortfall values, candidate
 feasibility and selection, usable recovery energy, projected SOC at the deadline and expected recovery time.
