@@ -23,7 +23,14 @@ ALLOWED_CARD_TYPES = {
     "vertical-stack",
 }
 
-REQUIRED_VIEWS = ("Přehled", "Diagnostika", "Nastavení")
+REQUIRED_VIEWS = (
+    "Přehled",
+    "Trading / Planner",
+    "Baterie",
+    "Grid / Export",
+    "Diagnostika",
+    "Pokročilé",
+)
 FORBIDDEN_KEYS = {"tap_action", "hold_action", "double_tap_action", "service"}
 FORBIDDEN_STRINGS = {
     "call-service",
