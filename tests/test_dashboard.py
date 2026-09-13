@@ -58,6 +58,24 @@ def test_overview_does_not_treat_unavailable_soc_as_zero_below_floor() -> None:
     assert numeric_guard < below_floor_check
 
 
+def test_available_energy_does_not_treat_unavailable_soc_as_zero() -> None:
+    dashboard = yaml.safe_load(DASHBOARD.read_text(encoding="utf-8"))
+    battery_view = next(view for view in dashboard["views"] if view["title"] == "Baterie")
+    energy_card = next(
+        card for card in battery_view["cards"] if card.get("title") == "Odhad energie nad minimálním SOC"
+    )
+    template = energy_card["content"]
+
+    assert "states('sensor.deye_battery') | float(0)" not in template
+    assert "states('sensor.solax_battery_capacity') | float(0)" not in template
+    assert "{% if is_number(deye_soc_raw) %}" in template
+    assert "{% if is_number(solax_soc_raw) %}" in template
+    assert "{% if is_number(solax_soc_raw) and is_number(deye_soc_raw) %}" in template
+    assert "**DEYE:** N/A" in template
+    assert "**SolaX:** N/A" in template
+    assert "**Celkem:** N/A" in template
+
+
 def test_dashboard_keeps_all_physical_entities_read_only() -> None:
     text = DASHBOARD.read_text(encoding="utf-8")
 

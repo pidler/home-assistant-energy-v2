@@ -309,16 +309,30 @@ views:
       - type: markdown
         title: Odhad energie nad minimálním SOC
         content: |
-          {% set solax_soc = states('sensor.solax_battery_capacity') | float(0) %}
-          {% set deye_soc = states('sensor.deye_battery') | float(0) %}
-          {% set solax_available = 24 * ([solax_soc - 10, 0] | max) / 100 %}
-          {% set deye_available = 32 * ([deye_soc - 10, 0] | max) / 100 %}
+          {% set solax_soc_raw = states('sensor.solax_battery_capacity') %}
+          {% set deye_soc_raw = states('sensor.deye_battery') %}
 
+          {% if is_number(deye_soc_raw) %}
+          {% set deye_available = 32 * ([(deye_soc_raw | float) - 10, 0] | max) / 100 %}
           **DEYE:** {{ deye_available | round(2) }} kWh nad 10 %
+          {% else %}
+          **DEYE:** N/A
+          {% endif %}
 
+          {% if is_number(solax_soc_raw) %}
+          {% set solax_available = 24 * ([(solax_soc_raw | float) - 10, 0] | max) / 100 %}
           **SolaX:** {{ solax_available | round(2) }} kWh nad 10 %
+          {% else %}
+          **SolaX:** N/A
+          {% endif %}
 
+          {% if is_number(solax_soc_raw) and is_number(deye_soc_raw) %}
+          {% set solax_available = 24 * ([(solax_soc_raw | float) - 10, 0] | max) / 100 %}
+          {% set deye_available = 32 * ([(deye_soc_raw | float) - 10, 0] | max) / 100 %}
           **Celkem:** {{ (deye_available + solax_available) | round(2) }} kWh
+          {% else %}
+          **Celkem:** N/A
+          {% endif %}
 
           Jde o okamžitý odhad, nikoli ledger původu energie.
 
