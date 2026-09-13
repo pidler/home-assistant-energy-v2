@@ -5,6 +5,14 @@ energy_v2:
   shadow_mode_entity: input_boolean.energy_v2_shadow_mode
   export_enabled_entity: input_boolean.energy_v2_export_enabled
   log_level: INFO
+  # Read-only state interpretation; validate timing for the installed inverter.
+  deye_state:
+    startup_window_s: 300
+    ready_confirmation_s: 10
+    shutdown_settle_s: 20
+    zero_tolerance_w: 10
+    feedback_max_age_s: 30
+    maximum_skew_s: 20
   solax_rated_power_w: 12000
   solax_battery_capacity_kwh: 24
   solax_min_soc_pct: 10

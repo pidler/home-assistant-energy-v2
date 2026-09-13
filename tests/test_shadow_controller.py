@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from apps.energy_v2.allocator import AllocationParameters, BatteryAvailability, ShadowPowerAllocator
+from apps.energy_v2.deye_state import DeyeAssessment, DeyeOperatingState
 from apps.energy_v2.load_model import LoadModelParameters
 from apps.energy_v2.models import (
     BatteryId,
@@ -49,6 +50,7 @@ def telemetry(
         sample(80, "sensor.deye_soc", at=at),
         sample(solax_pv, "sensor.solax_pv_power", at=at),
         sample(deye_pv, "sensor.deye_pv_power", at=at),
+        deye_operating=DeyeAssessment(DeyeOperatingState.READY, "test confirmed readiness", at),
     )
 
 
