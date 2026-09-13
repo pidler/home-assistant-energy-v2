@@ -38,6 +38,26 @@ def test_overview_uses_authoritative_whole_site_load_and_phase5_placeholder() ->
     assert "ENERGY V2 Phase 2" not in text
 
 
+def test_overview_does_not_treat_unavailable_soc_as_zero_below_floor() -> None:
+    dashboard = yaml.safe_load(DASHBOARD.read_text(encoding="utf-8"))
+    reserve_card = next(card for card in dashboard["views"][0]["cards"] if card.get("title") == "Stav rezerv baterií")
+    template = reserve_card["content"]
+
+    assert "states('sensor.deye_battery') | float(0)" not in template
+    assert "states('sensor.solax_battery_capacity') | float(0)" not in template
+    assert "{% if is_number(deye_soc_raw) %}" in template
+    assert "{% if is_number(solax_soc_raw) %}" in template
+    assert "deye_soc_raw == 'unknown'" in template
+    assert "deye_soc_raw == 'unavailable'" in template
+    assert "solax_soc_raw == 'unknown'" in template
+    assert "solax_soc_raw == 'unavailable'" in template
+    assert "DEYE SOC není dostupné" in template
+    assert "SolaX SOC není dostupné" in template
+    numeric_guard = template.index("{% if is_number(deye_soc_raw) %}")
+    below_floor_check = template.index("{% if deye_soc < 10 %}")
+    assert numeric_guard < below_floor_check
+
+
 def test_dashboard_keeps_all_physical_entities_read_only() -> None:
     text = DASHBOARD.read_text(encoding="utf-8")
 
