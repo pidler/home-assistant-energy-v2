@@ -104,3 +104,9 @@ python -m pytest
 The verifier enforces the six-view structure, approved standard card types,
 known entity references, read-only actuator placement and absence of service or
 interaction actions.
+
+Phase 5A advisory runtime now supplies the Trading / Planner view through
+sensor.energy_v2_phase5a_* diagnostics. The view guards a missing/older-than-30s
+runtime heartbeat and labels retained data LAST KNOWN. See
+[advisory runtime](phase-5a-advisory-runtime.md) for the full input/output contract.
+No physical-control action is added.
