@@ -14,6 +14,7 @@ from .flow import FlowDebouncer, FlowSnapshot, FlowState, FlowThresholds, Rollin
 from .load_model import LoadEstimate, LoadModelParameters, estimate_whole_site_load
 from .models import (
     BatteryAction,
+    BatteryId,
     CommandResult,
     CommandStatus,
     ControlTelemetrySnapshot,
@@ -77,6 +78,7 @@ class ShadowControlCore:
         operating = telemetry.deye_operating
         if operating is None or not operating.dispatch_ready:
             deye = replace(deye, available=False)
+            self.allocator.invalidate_battery(BatteryId.DEYE)
         pv = self._total_pv(telemetry)
         load = estimate_whole_site_load(
             telemetry.solax_inverter_power,
@@ -159,6 +161,14 @@ class ShadowControlCore:
             if telemetry.solax_battery_power.quality is TelemetryQuality.VALID
             else None
         )
+        # Final authority after all allocation, slew and transfer processing.
+        # No previous allocator output may survive a loss of confirmed READY.
+        if operating is None or not operating.dispatch_ready:
+            allocation = replace(
+                allocation,
+                deye=replace(allocation.deye, action=BatteryAction.HOLD, target_power_w=0.0),
+            )
+            self.allocator.invalidate_battery(BatteryId.DEYE)
         deye_result = self.deye_adapter.translate(allocation.deye, deye_actual)
         solax_result = self.solax_adapter.translate(
             allocation.solax,

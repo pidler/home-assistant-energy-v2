@@ -21,6 +21,13 @@ def change_time(raw: object, now: datetime) -> datetime | None:
     return parse_timestamp(raw.get("last_changed") or raw.get("last_updated"), now)
 
 
+def transition_time(raw: object, now: datetime) -> datetime | None:
+    """Actual state-change evidence; metadata/report updates are not transitions."""
+    if not isinstance(raw, dict):
+        return None
+    return parse_timestamp(raw.get("last_changed"), now)
+
+
 def observation_time(raw: object, now: datetime) -> datetime | None:
     if not isinstance(raw, dict):
         return None

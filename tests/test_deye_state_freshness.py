@@ -270,3 +270,67 @@ def test_reconnect_requires_new_settling_evidence():
     data = feedback(NOW + timedelta(seconds=2))
     data["switch"]["last_changed"] = (NOW - timedelta(hours=2)).isoformat()
     assert adapter.evaluate(data, NOW + timedelta(seconds=2)).state is State.STOPPING
+
+
+@pytest.mark.parametrize("state", [State.STOPPING, State.INTENTIONAL_OFF, State.UNEXPECTED_FAULT, State.UNAVAILABLE])
+def test_nonready_clears_sustained_allocator_history(state):
+    from apps.energy_v2.models import BatteryAction
+    from tests.test_shadow_controller import telemetry
+
+    core = ShadowControlCore()
+
+    def tick(seconds, operating, measured=0, target=3000):
+        at = NOW + timedelta(seconds=seconds)
+        data = replace(telemetry(at=at, deye_battery=measured), deye_operating=DeyeAssessment(operating, "test", at))
+        site = replace(command(), created_at=at, expires_at=at + timedelta(seconds=30), grid_target_w=target)
+        return core.evaluate(
+            data, site, deye=availability(BatteryId.DEYE, measured), solax=availability(BatteryId.SOLAX)
+        ).allocation.deye
+
+    assert [tick(t, State.READY).target_power_w for t in (0, 1, 2)] == [-2000, -4000, -5000]
+    for t in (3, 4, 20):
+        result = tick(t, state)
+        assert result.action is BatteryAction.HOLD
+        assert result.target_power_w == 0
+    # Readiness alone cannot resurrect history: require new measured-zero evidence.
+    assert tick(21, State.READY, measured=-5000).target_power_w == 0
+    assert tick(22, State.READY).target_power_w == 0
+    assert tick(31, State.READY).target_power_w == 0
+    # A new zero-demand command after confirmation must stay zero, not revive -5000 W.
+    assert tick(32, State.READY, target=-9879).target_power_w == 0
+
+
+@pytest.mark.parametrize("key", ["state", "fault"])
+def test_normal_confirmation_reconciles_transition_between_ticks(key):
+    adapter = DeyeStateAdapter()
+    data = feedback(switch="on", state="Normal", fault="OK", changed=NOW)
+    assert adapter.evaluate(data, NOW).state is State.STARTING
+    entered = NOW + timedelta(seconds=9)
+    for seconds, expected in ((10, State.STARTING), (18, State.STARTING), (19, State.READY)):
+        at = NOW + timedelta(seconds=seconds)
+        data = feedback(at, switch="on", state="Normal", fault="OK", changed=NOW)
+        data[key]["last_changed"] = entered.isoformat()
+        assert adapter.evaluate(data, at).state is expected
+
+
+def test_zero_settling_reconciles_transition_between_ticks():
+    adapter = DeyeStateAdapter()
+    assert adapter.evaluate(feedback(changed=NOW), NOW).state is State.STOPPING
+    entered = NOW + timedelta(seconds=19)
+    for seconds, expected in ((20, State.STOPPING), (38, State.STOPPING), (39, State.INTENTIONAL_OFF)):
+        at = NOW + timedelta(seconds=seconds)
+        data = feedback(at, changed=NOW)
+        data["power"]["last_changed"] = entered.isoformat()
+        assert adapter.evaluate(data, at).state is expected
+
+
+def test_updated_timestamp_cannot_renew_startup_without_switch_transition():
+    adapter = DeyeStateAdapter(DeyeStateConfig(startup_window_s=45))
+    for seconds in (0, 20, 44, 45, 60, 90, 120):
+        at = NOW + timedelta(seconds=seconds)
+        data = feedback(at, switch="on")
+        data["switch"].pop("last_changed")
+        data["switch"]["last_updated"] = at.isoformat()
+        assessed = adapter.evaluate(data, at)
+        assert assessed.state is State.UNAVAILABLE
+        assert not assessed.dispatch_ready

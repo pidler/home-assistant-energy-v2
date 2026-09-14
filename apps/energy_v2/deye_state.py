@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .models import StrEnum
-from .observations import change_time, communication_time, observation_time
+from .observations import communication_time, observation_time, transition_time
 
 
 class DeyeOperatingState(StrEnum):
@@ -56,6 +56,7 @@ class DeyeStateAdapter:
         self._normal_since: datetime | None = None
         self._was_ready = False
         self._last_observed: datetime | None = None
+        self._last_switch: tuple[str, datetime] | None = None
 
     def evaluate(self, feedback: Mapping[str, object], now: datetime) -> DeyeAssessment:
         def result(state: DeyeOperatingState, reason: str, at: datetime | None = None) -> DeyeAssessment:
@@ -81,19 +82,33 @@ class DeyeStateAdapter:
         self._last_observed = observed
         values = {key: raw.get("state") if isinstance(raw, dict) else None for key, raw in feedback.items()}
         switch = values.get("switch")
-        changed = change_time(feedback.get("switch"), now)
-        if switch not in ("on", "off") or values.get("connection") != "on" or changed is None:
+        changed = transition_time(feedback.get("switch"), now)
+        if switch not in ("on", "off") or values.get("connection") != "on":
             self._zero_since = self._normal_since = None
             return result(DeyeOperatingState.UNAVAILABLE, "Switch/connection feedback is unavailable", observed)
+        previous_switch = self._last_switch
+        switch_observed = stamps["switch"]
+        assert switch_observed is not None
+        self._last_switch = (switch, switch_observed)
+        if changed is None:
+            if previous_switch is not None and previous_switch[0] != switch and switch_observed > previous_switch[1]:
+                # The edge occurred between two reports. Use the earlier bound so
+                # polling latency cannot extend the startup allowance.
+                changed = previous_switch[1]
+            elif self._transition is not None and self._transition[0] == switch:
+                changed = self._transition[1]
+            else:
+                self._zero_since = self._normal_since = None
+                return result(DeyeOperatingState.UNAVAILABLE, "Switch transition time is unverified", observed)
         # A real transition, not a process restart or reconnect, defines startup time.
         transition = (switch, changed)
         if transition != self._transition:
             self._transition = transition
             self._zero_since = self._normal_since = None
             self._was_ready = False
-            power_changed = change_time(feedback.get("power"), now)
-            state_changed = change_time(feedback.get("state"), now)
-            fault_changed = change_time(feedback.get("fault"), now)
+            power_changed = transition_time(feedback.get("power"), now)
+            state_changed = transition_time(feedback.get("state"), now)
+            fault_changed = transition_time(feedback.get("fault"), now)
             if power_changed is not None:
                 self._zero_since = max(changed, power_changed)
             if state_changed is not None and fault_changed is not None:
@@ -119,6 +134,10 @@ class DeyeStateAdapter:
                 self._zero_since = None
                 return result(DeyeOperatingState.STOPPING, "OFF output has not settled near zero", observed)
             self._zero_since = self._zero_since or observed
+            power_changed = transition_time(feedback.get("power"), now)
+            if power_changed is not None:
+                # A newer zero entry can reveal an excursion between polling ticks.
+                self._zero_since = max(self._zero_since, power_changed)
             if (observed - self._zero_since).total_seconds() < self.config.shutdown_settle_s:
                 return result(DeyeOperatingState.STOPPING, "Confirming measured near-zero output after OFF", observed)
             return result(
@@ -128,6 +147,10 @@ class DeyeStateAdapter:
         normal = state == "Normal" and fault == "OK"
         if normal:
             self._normal_since = self._normal_since or observed
+            for key in ("state", "fault"):
+                entered = transition_time(feedback.get(key), now)
+                if entered is not None:
+                    self._normal_since = max(self._normal_since, entered)
             if (observed - self._normal_since).total_seconds() >= self.config.ready_confirmation_s:
                 self._was_ready = True
                 return result(DeyeOperatingState.READY, "Normal state and coherent feedback confirmed", observed)
