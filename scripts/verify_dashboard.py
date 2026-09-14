@@ -53,9 +53,10 @@ FORBIDDEN_KEY_RE = re.compile(r"^\s*(tap_action|hold_action|double_tap_action|se
 
 def load_config_entities() -> tuple[set[str], set[str]]:
     sys.path.insert(0, str(ROOT))
+    from apps.energy_v2.advisory import OUTPUTS
     from apps.energy_v2.config import DEFAULT_CONFLICTING_AUTOMATIONS, ENTITY_IDS, OWNED_ACTUATORS
 
-    known = set(ENTITY_IDS.values())
+    known = set(ENTITY_IDS.values()) | set(OUTPUTS.values())
     known.update(DEFAULT_CONFLICTING_AUTOMATIONS)
     known.update(OWNED_ACTUATORS)
     return known, set(OWNED_ACTUATORS)

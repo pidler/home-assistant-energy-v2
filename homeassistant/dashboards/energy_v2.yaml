@@ -145,7 +145,7 @@ views:
       - type: markdown
         title: Phase 5A planner
         content: |
-          **Runtime:** NOT CONNECTED
+          **Advisory runtime:** {{ states('sensor.energy_v2_phase5a_status') }}
 
           **Current action:** —
 
@@ -207,23 +207,48 @@ views:
           - sensor.current_sell_electricity_price_15min
 
       - type: markdown
-        title: Phase 5A trading planner
+        title: Phase 5A advisory baseline
         content: |
-          ## Runtime: NOT CONNECTED
+          {% set evaluated = state_attr('sensor.energy_v2_phase5a_status', 'evaluated_at') %}
+          {% set age = as_timestamp(now()) - as_timestamp(evaluated, 0) %}
+          {% if age < 0 or age > 30 %}
+          **STALE / NOT CONNECTED** — advisory runtime heartbeat missing. Retained values are LAST KNOWN.
+          {% elif states('sensor.energy_v2_phase5a_status') == 'UPDATING' %}
+          **UPDATING / INVALID** — diagnostic publication is incomplete.
+          {% else %}
+          **status:** {{ states('sensor.energy_v2_phase5a_status') }}
 
-          | Výstup | Stav |
-          |---|---|
-          | Current action | — |
-          | Next action / time | — |
-          | Planner horizon | — |
-          | Generated at / freshness | — |
-          | Ekonomická hodnota plánu | — |
-          | SOC trajectory | — |
-          | SolaX overnight reserve | — |
-          | DEYE below-floor recovery | — |
-          | DEYE power-state overlay | — |
+          **plan id:** {{ states('sensor.energy_v2_phase5a_plan_id') }}
 
-          Hodnoty budou doplněny až po zavedení ověřeného read-only runtime rozhraní.
+          **generated at:** {{ states('sensor.energy_v2_phase5a_generated_at') }}
+
+          **valid until:** {{ states('sensor.energy_v2_phase5a_valid_until') }}
+
+          **current action:** {{ states('sensor.energy_v2_phase5a_current_action') }}
+
+          **next action:** {{ states('sensor.energy_v2_phase5a_next_action') }}
+
+          **next action time:** {{ states('sensor.energy_v2_phase5a_next_action_time') }}
+
+          **net result:** {{ states('sensor.energy_v2_phase5a_net_result') }}
+
+          **import kwh:** {{ states('sensor.energy_v2_phase5a_import_kwh') }}
+
+          **export kwh:** {{ states('sensor.energy_v2_phase5a_export_kwh') }}
+
+          **terminal deye soc:** {{ states('sensor.energy_v2_phase5a_terminal_deye_soc') }}
+
+          **terminal solax soc:** {{ states('sensor.energy_v2_phase5a_terminal_solax_soc') }}
+
+          **reserve status:** {{ states('sensor.energy_v2_phase5a_reserve_status') }}
+
+          **degraded inputs:** {{ states('sensor.energy_v2_phase5a_degraded_inputs') }}
+
+          **replan reason:** {{ states('sensor.energy_v2_phase5a_replan_reason') }}
+
+          **summary:** {{ states('sensor.energy_v2_phase5a_summary') }}
+
+          {% endif %}
 
       - type: markdown
         title: Starý jednoduchý shadow planner

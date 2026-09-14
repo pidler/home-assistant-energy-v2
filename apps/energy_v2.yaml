@@ -78,3 +78,17 @@ energy_v2:
     - automation.spust_vybijeno_deye_v_konkretni_cas
     - automation.vypne_vybijeni_deye_a_zapne_self_use_mod_na_solaxu
     - automation.zpnout_nabijeni_deye_v_ucity_cas
+
+# Advisory-only, separate from Phase 4. Installation/restart is a future operation.
+energy_v2_phase5a_advisory:
+  module: energy_v2.advisory_app
+  class: Phase5AdvisoryApp
+  advisory:
+    timezone: Europe/Prague
+    minimum_interval_s: 120
+    debounce_s: 20
+    soc_delta_pct: 3
+    load_delta_w: 300
+    horizon_refresh_s: 1800
+    profile_max_age_s: 21600
+    soc_max_age_s: 1800

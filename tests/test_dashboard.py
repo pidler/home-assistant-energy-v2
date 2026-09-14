@@ -27,14 +27,14 @@ def test_dashboard_has_six_redesigned_views() -> None:
     ]
 
 
-def test_overview_uses_authoritative_whole_site_load_and_phase5_placeholder() -> None:
+def test_overview_uses_authoritative_whole_site_load_and_phase5_advisory_status() -> None:
     dashboard = yaml.safe_load(DASHBOARD.read_text(encoding="utf-8"))
     overview = dashboard["views"][0]
     text = str(overview)
 
     assert "input_number.energy_v2_whole_site_load_w" in text
     assert "Phase 5A planner" in text
-    assert "Runtime:** NOT CONNECTED" in text
+    assert "sensor.energy_v2_phase5a_status" in text
     assert "ENERGY V2 Phase 2" not in text
 
 
