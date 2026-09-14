@@ -334,3 +334,40 @@ def test_updated_timestamp_cannot_renew_startup_without_switch_transition():
         assessed = adapter.evaluate(data, at)
         assert assessed.state is State.UNAVAILABLE
         assert not assessed.dispatch_ready
+
+
+def inferred_feedback(seconds, switch, state="Normal", fault="OK"):
+    at = NOW + timedelta(seconds=seconds)
+    data = feedback(at, switch=switch, state=state, fault=fault, changed=NOW - timedelta(hours=2))
+    data["switch"].pop("last_changed")
+    data["switch"]["last_updated"] = at.isoformat()
+    return data, at
+
+
+def test_inferred_on_edge_requires_full_confirmation_from_first_on_report():
+    adapter = DeyeStateAdapter(DeyeStateConfig(ready_confirmation_s=10))
+    assert adapter.evaluate(*inferred_feedback(0, "off")).state is State.UNAVAILABLE
+    for seconds, expected in ((20, State.STARTING), (29, State.STARTING), (30, State.READY)):
+        assert adapter.evaluate(*inferred_feedback(seconds, "on")).state is expected
+
+
+def test_inferred_off_edge_requires_full_settling_from_first_off_report():
+    adapter = DeyeStateAdapter(DeyeStateConfig(shutdown_settle_s=20))
+    assert adapter.evaluate(*inferred_feedback(0, "on")).state is State.UNAVAILABLE
+    for seconds, expected in ((20, State.STOPPING), (39, State.STOPPING), (40, State.INTENTIONAL_OFF)):
+        assert adapter.evaluate(*inferred_feedback(seconds, "off")).state is expected
+
+
+def test_inferred_edge_lower_bound_limits_grace_without_accelerating_ready():
+    config = DeyeStateConfig(startup_window_s=25, ready_confirmation_s=10)
+    normal = DeyeStateAdapter(config)
+    fault = DeyeStateAdapter(config)
+    for adapter in (normal, fault):
+        assert adapter.evaluate(*inferred_feedback(0, "off")).state is State.UNAVAILABLE
+    for seconds in (20, 24):
+        assert normal.evaluate(*inferred_feedback(seconds, "on")).state is State.STARTING
+        assert fault.evaluate(*inferred_feedback(seconds, "on", "Fault")).state is State.STARTING
+    # Grace expires at the earlier bound + 25, not first ON report + 25.
+    assert fault.evaluate(*inferred_feedback(25, "on", "Fault")).state is State.UNEXPECTED_FAULT
+    assert normal.evaluate(*inferred_feedback(25, "on")).state is State.STARTING
+    assert normal.evaluate(*inferred_feedback(30, "on")).state is State.READY

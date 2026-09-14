@@ -90,6 +90,8 @@ class DeyeStateAdapter:
         switch_observed = stamps["switch"]
         assert switch_observed is not None
         self._last_switch = (switch, switch_observed)
+        # Positive confirmation cannot predate the first report of an inferred edge.
+        confirmation_start = changed if changed is not None else switch_observed
         if changed is None:
             if previous_switch is not None and previous_switch[0] != switch and switch_observed > previous_switch[1]:
                 # The edge occurred between two reports. Use the earlier bound so
@@ -109,10 +111,8 @@ class DeyeStateAdapter:
             power_changed = transition_time(feedback.get("power"), now)
             state_changed = transition_time(feedback.get("state"), now)
             fault_changed = transition_time(feedback.get("fault"), now)
-            if power_changed is not None:
-                self._zero_since = max(changed, power_changed)
-            if state_changed is not None and fault_changed is not None:
-                self._normal_since = max(changed, state_changed, fault_changed)
+            self._zero_since = max(confirmation_start, power_changed or observed)
+            self._normal_since = max(confirmation_start, state_changed or observed, fault_changed or observed)
         try:
             power = float(values.get("power"))
         except (ValueError, TypeError):
