@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Protocol
 
 from .config import ENTITY_IDS
+from .deye_state import DeyeAssessment, DeyeStateAdapter, DeyeStateConfig
 from .models import (
     ControlTelemetrySnapshot,
     NumericTelemetrySample,
@@ -13,6 +14,7 @@ from .models import (
     TelemetryQuality,
     TelemetrySnapshot,
 )
+from .observations import change_time, communication_time, observation_time
 
 INVALID_STATES = {"unknown", "unavailable", "", "none", "null"}
 
@@ -42,6 +44,7 @@ class _RawNumericState:
     timestamp: datetime | None
     age_s: float | None
     quality: TelemetryQuality
+    value_changed_at: datetime | None = None
 
 
 class StateReader(Protocol):
@@ -92,10 +95,12 @@ class TelemetryReader:
         app: StateReader,
         entity_ids: dict[str, str] | None = None,
         freshness: TelemetryFreshnessConfig | None = None,
+        deye_state_config: DeyeStateConfig | None = None,
     ) -> None:
         self.app = app
         self.entity_ids = entity_ids or ENTITY_IDS
         self.freshness = freshness or TelemetryFreshnessConfig()
+        self.deye_adapter = DeyeStateAdapter(deye_state_config)
         self.last_errors: tuple[str, ...] = ()
 
     def _state(self, key: str) -> Any:
@@ -123,10 +128,31 @@ class TelemetryReader:
             errors.append(f"{self.entity_ids[key]} is missing")
         return value
 
+    def deye_operating(self, now: datetime | None = None, *, power: _RawNumericState | None = None) -> DeyeAssessment:
+        feedback = {
+            name: self.app.get_state(self.entity_ids.get(key, ""), attribute="all")
+            for name, key in (
+                ("switch", "deye_switch"),
+                ("state", "deye_device_state"),
+                ("fault", "deye_device_fault"),
+                ("power", "deye_inverter_power"),
+                ("connection", "deye_connection"),
+            )
+        }
+        if power is not None:
+            # Assess the same AC sample used by the load model, not a second cache read.
+            feedback["power"] = {
+                "state": power.value,
+                "last_reported": power.timestamp,
+                "last_changed": power.value_changed_at,
+            }
+        return self.deye_adapter.evaluate(feedback, now or datetime.now().astimezone())
+
     def snapshot(self) -> TelemetrySnapshot:
         errors: list[str] = []
         snap = TelemetrySnapshot(
             timestamp=datetime.now().astimezone(),
+            deye_operating=self.deye_operating(),
             solax_soc_pct=self._float("solax_soc", errors),
             solax_battery_power_w=self._float("solax_battery_power", errors),
             solax_pv_power_w=self._float("solax_pv_power", errors),
@@ -193,10 +219,23 @@ class TelemetryReader:
             self.freshness.deye_source_health_window_s,
             "DEYE",
         )
-        if parse_bool_state(self.app.get_state(self.entity_ids.get("deye_connection", ""))) is False:
+        connection = self.app.get_state(self.entity_ids.get("deye_connection", ""), attribute="all")
+        connected = parse_bool_state(connection.get("state") if isinstance(connection, dict) else connection)
+        if connected is False:
             deye_health = (False, None, "DEYE connection entity explicitly reports disconnected")
+        elif isinstance(connection, dict):
+            received = communication_time(connection, sampled_at)
+            if (
+                connected is not True
+                or received is None
+                or (sampled_at - received).total_seconds() > self.freshness.deye_source_health_window_s
+            ):
+                deye_health = (False, received, "DEYE connection/source receipt is stale or unavailable")
+            else:
+                deye_health = (True, received, "DEYE source healthy via connection receipt")
         return ControlTelemetrySnapshot(
             sampled_at=sampled_at,
+            deye_operating=self.deye_operating(sampled_at, power=raw["deye_inverter_power"]),
             solax_inverter_power=self._classified_sample(
                 "solax_inverter_power", raw["solax_inverter_power"], TelemetryClass.FAST_POWER, solax_age, solax_health
             ),
@@ -254,12 +293,23 @@ class TelemetryReader:
         state = raw.get("state") if isinstance(raw, dict) else raw
         value = parse_float_state(state)
         timestamp = _state_timestamp(raw, now)
+        changed = change_time(raw, now)
+        # Explicit known sign inversion: never refresh a disagreeing cached derived value.
+        source_id = self.entity_ids.get("deye_battery_power_raw") if key == "deye_battery_power" else None
+        if source_id:
+            source = self.app.get_state(source_id, attribute="all")
+            if source is not None:
+                source_value = parse_float_state(source.get("state") if isinstance(source, dict) else source)
+                source_time = observation_time(source, now)
+                if value is None or source_value is None or not math.isclose(value, -source_value, abs_tol=0.01):
+                    return _RawNumericState(value, timestamp, None, TelemetryQuality.INVALID, changed)
+                timestamp = source_time
         age_s = max((now - timestamp).total_seconds(), 0.0) if timestamp is not None else None
         if value is None:
             return _RawNumericState(None, timestamp, age_s, TelemetryQuality.INVALID)
         if timestamp is None:
             return _RawNumericState(value, None, None, TelemetryQuality.INVALID)
-        return _RawNumericState(value, timestamp, age_s, TelemetryQuality.VALID)
+        return _RawNumericState(value, timestamp, age_s, TelemetryQuality.VALID, changed)
 
     def _source_health(
         self,
@@ -282,6 +332,20 @@ class TelemetryReader:
         return True, newest.timestamp, f"{source} source healthy via {self.entity_ids[key]}"
 
     def _classified_sample(
+        self,
+        key: str,
+        raw: _RawNumericState,
+        telemetry_class: TelemetryClass,
+        maximum_age_s: float,
+        source_health: tuple[bool, datetime | None, str],
+        **kwargs: float,
+    ) -> NumericTelemetrySample:
+        sample = self._classify(key, raw, telemetry_class, maximum_age_s, source_health, **kwargs)
+        return replace(
+            sample, value_changed_at=raw.value_changed_at, observed_at=raw.timestamp, source_health_at=source_health[1]
+        )
+
+    def _classify(
         self,
         key: str,
         raw: _RawNumericState,
@@ -390,24 +454,11 @@ class TelemetryReader:
             fresh,
             "Legacy single-sample freshness check",
             timestamp,
+            value_changed_at=raw.value_changed_at,
+            observed_at=timestamp,
+            source_health_at=timestamp,
         )
 
 
 def _state_timestamp(raw: object, fallback: datetime) -> datetime | None:
-    if not isinstance(raw, dict):
-        return fallback
-    value = raw.get("last_updated") or raw.get("last_changed")
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    else:
-        return None
-    if parsed.tzinfo is None and fallback.tzinfo is not None:
-        parsed = parsed.replace(tzinfo=fallback.tzinfo)
-    return parsed
+    return observation_time(raw, fallback)

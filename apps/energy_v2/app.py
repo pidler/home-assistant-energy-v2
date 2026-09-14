@@ -24,6 +24,7 @@ from .config import (
     REQUIRED_TELEMETRY_KEYS,
     parse_charge_shadow_config,
 )
+from .deye_state import DeyeStateConfig
 from .diagnostics import (
     app_status_value,
     compact_reasons,
@@ -108,7 +109,12 @@ class EnergyV2App(hass.Hass):
             self.load_parameters = LoadModelParameters(
                 maximum_timestamp_skew_s=self.telemetry_freshness.fast_input_max_skew_s
             )
-        self.telemetry = TelemetryReader(self, self.entity_ids, self.telemetry_freshness)
+        try:
+            deye_state_config = DeyeStateConfig(**self.args.get("deye_state", {}))
+        except (TypeError, ValueError) as exc:
+            self._config_errors = (*self._config_errors, f"Invalid deye_state config: {exc}")
+            deye_state_config = DeyeStateConfig()
+        self.telemetry = TelemetryReader(self, self.entity_ids, self.telemetry_freshness, deye_state_config)
         self.sign_conventions = SignConventions(
             solax_battery_charging_positive=self._bool_arg("solax_battery_charging_positive", True),
             deye_battery_charging_positive=self._bool_arg("deye_battery_charging_positive", True),
@@ -231,7 +237,7 @@ class EnergyV2App(hass.Hass):
         try:
             self._refresh_entity_existence_diagnostics()
             snapshot = self.telemetry.snapshot()
-            telemetry_validation = validate_telemetry(snapshot)
+            telemetry_validation = validate_telemetry(snapshot, passive=True)
             conflict_states = {entity_id: str(self.get_state(entity_id)) for entity_id in self.conflicting_automations}
             active_conflicts = find_active_conflicts(conflict_states, self.conflicting_automations)
             legacy_enabled = parse_bool_state(self.get_state(self.entity_ids["legacy_enabled"])) is True
@@ -247,7 +253,7 @@ class EnergyV2App(hass.Hass):
             flow_assessment = self._evaluate_flow_monitoring(snapshot, telemetry_validation)
 
             enable_validation = safe_to_enable(
-                self._merge_config_validation(telemetry_validation),
+                self._merge_config_validation(validate_telemetry(snapshot)),
                 legacy_enabled,
                 current_enabled,
                 active_conflicts,
@@ -277,6 +283,10 @@ class EnergyV2App(hass.Hass):
                     strategy=strategy,
                     flow_assessment=flow_assessment,
                 )
+                if decision.mode in (Mode.EXPORT_DEYE, Mode.PV_CHARGE_DEYE) and (
+                    snapshot.deye_operating is None or not snapshot.deye_operating.dispatch_ready
+                ):
+                    decision = PlannerDecision(Mode.IDLE, "DEYE is not dispatch-ready", "high")
                 if self._config_errors:
                     decision = PlannerDecision(Mode.DISABLED, "Configuration is invalid", "high")
                 decision_text = format_decision(decision)
@@ -354,7 +364,7 @@ class EnergyV2App(hass.Hass):
         self._flow_tick_running = True
         try:
             snapshot = self.telemetry.snapshot()
-            telemetry_validation = validate_telemetry(snapshot)
+            telemetry_validation = validate_telemetry(snapshot, passive=True)
             self._evaluate_flow_monitoring(snapshot, telemetry_validation)
             self._evaluate_charge_shadow()
         except Exception as exc:  # pragma: no cover - AppDaemon runtime guard
@@ -388,7 +398,9 @@ class EnergyV2App(hass.Hass):
             )
             deye = BatteryAvailability(
                 BatteryId.DEYE,
-                telemetry.deye_soc.quality is TelemetryQuality.VALID
+                telemetry.deye_operating is not None
+                and telemetry.deye_operating.dispatch_ready
+                and telemetry.deye_soc.quality is TelemetryQuality.VALID
                 and telemetry.deye_battery_power.quality is TelemetryQuality.VALID
                 and parse_bool_state(self.get_state(self.entity_ids["deye_connection"])) is True,
                 telemetry.deye_soc.value,
@@ -422,6 +434,8 @@ class EnergyV2App(hass.Hass):
             self._publish_shadow_control_diagnostics(result)
         except Exception as exc:  # pragma: no cover - AppDaemon runtime guard
             error_text = f"unexpected shadow control tick error: {exc!r}"
+            self._set_helper("energy_v2_load_quality", "INVALID")
+            self._set_helper("energy_v2_load_summary", "INVALID; numeric helper is LAST KNOWN; " + error_text)
             self._set_helper("energy_v2_command_status", "FAULT")
             self._set_helper("energy_v2_saturation_reason", error_text)
             self._set_helper("energy_v2_last_evaluation_error", error_text)
@@ -441,7 +455,12 @@ class EnergyV2App(hass.Hass):
         if load.load_w is not None:
             self._set_helper("energy_v2_whole_site_load_w", f"{load.load_w:.1f}")
         self._set_helper("energy_v2_load_quality", load.quality.value)
-        self._set_helper("energy_v2_load_summary", load.reason)
+        validity = (
+            "VALID"
+            if load.load_w is not None and load.quality is TelemetryQuality.VALID
+            else "INVALID; numeric helper is LAST KNOWN, not current"
+        )
+        self._set_helper("energy_v2_load_summary", f"{validity}; checked={heartbeat_value()}; {load.reason}")
         self._set_helper("energy_v2_requested_site_target_w", f"{allocation.requested_grid_target_w:.1f}")
         self._set_helper("energy_v2_budget_diagnostic_target_w", f"{result.budget_diagnostic_target_w:.1f}")
         self._set_helper("energy_v2_deye_requested_power_w", f"{result.deye.requested_power_w:.1f}")
@@ -503,7 +522,8 @@ class EnergyV2App(hass.Hass):
             deye_battery_power_w=parse_float_state(self.get_state(self.entity_ids["deye_battery_power"])),
             deye_battery_voltage_v=parse_float_state(self.get_state(self.entity_ids["deye_battery_voltage"])),
         )
-        decision = self.charge_controller.evaluate(telemetry, enabled=True)
+        operating = self.telemetry.deye_operating(now)
+        decision = self.charge_controller.evaluate(telemetry, enabled=operating.dispatch_ready)
         live_maximum = self._deye_current_entity_maximum_a()
         if live_maximum is not None and decision.recommended_current_a > live_maximum:
             decision = replace(

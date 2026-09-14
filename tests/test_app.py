@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 import types
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ from apps.energy_v2.models import Mode
 
 class StubHass:
     def __init__(self) -> None:
+        self.observations: dict[str, tuple[object, str]] = {}
         self.args: dict[str, Any] = {"charge_shadow": {}}
         self.states: dict[str, Any] = {}
         self.services: list[tuple[str, dict[str, Any]]] = []
@@ -36,9 +37,19 @@ class StubHass:
                 return None
             if isinstance(value, dict):
                 return value
-            # Unit-test fallback: real AppDaemon returns a timestamped dict,
-            # while scalar stubs deliberately exercise the non-dict path.
-            return value
+            previous = self.observations.get(entity_id)
+            if previous is None or previous[0] != value:
+                self.observations[entity_id] = (
+                    value,
+                    (datetime.now().astimezone() - timedelta(seconds=15)).isoformat(),
+                )
+            at = self.observations[entity_id][1]
+            return {
+                "state": value,
+                "last_changed": at,
+                "last_updated": at,
+                "last_reported": (datetime.fromisoformat(at) + timedelta(seconds=14)).isoformat(),
+            }
         if isinstance(value, dict):
             return value.get("state")
         return value
@@ -139,6 +150,8 @@ def valid_states() -> dict[str, Any]:
             ENTITY_IDS["deye_grid_power"]: "0",
             ENTITY_IDS["deye_external_power"]: "0",
             ENTITY_IDS["deye_device_state"]: "Normal",
+            ENTITY_IDS["deye_device_fault"]: "OK",
+            ENTITY_IDS["deye_switch"]: "on",
             ENTITY_IDS["deye_connection"]: "on",
             ENTITY_IDS["buy_price"]: "2",
             ENTITY_IDS["sell_price"]: "3.5",
@@ -235,6 +248,12 @@ def test_phase4_stale_battery_power_is_unverified_for_both_inverters() -> None:
             "state": "0",
             "last_updated": "2000-01-01T00:00:00+00:00",
         }
+        if key == "deye_battery_power":
+            # The derived sensor is only stale if its known raw source is stale too.
+            app.states[ENTITY_IDS["deye_battery_power_raw"]] = {
+                "state": "0",
+                "last_updated": "2000-01-01T00:00:00+00:00",
+            }
         app.initialize()
 
         app._control_tick()
@@ -874,3 +893,68 @@ def test_recommendation_is_clamped_to_live_entity_maximum() -> None:
     app.initialize()
     app._evaluate_charge_shadow()
     assert float(helper_value(app, "energy_v2_recommended_deye_charge_current_a")) <= 100
+
+
+def test_intentional_off_runtime_load_validity_and_dispatch_guard() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    now = datetime.now().astimezone()
+    for key, value in {
+        "deye_switch": "off",
+        "deye_device_state": "Fault",
+        "deye_device_fault": "Tz_Integ_Fault failure",
+        "deye_connection": "on",
+        "deye_inverter_power": "0",
+    }.items():
+        app.states[ENTITY_IDS[key]] = {
+            "state": value,
+            "last_changed": (now - timedelta(hours=2)).isoformat(),
+            "last_updated": (now - timedelta(hours=2)).isoformat(),
+            "last_reported": (now - timedelta(seconds=1)).isoformat(),
+        }
+    app.initialize()
+    app._control_tick()
+    assert helper_value(app, "energy_v2_load_quality") == "VALID"
+    assert "INTENTIONAL_OFF" in helper_value(app, "energy_v2_load_summary")
+    assert "checked=" in helper_value(app, "energy_v2_load_summary")
+    assert float(helper_value(app, "energy_v2_deye_requested_power_w")) == 0
+    assert helper_value(app, "energy_v2_safe_to_enable") == "off"
+    assert "Telemetry is not valid" not in helper_value(app, "energy_v2_last_decision")
+    prior_load = helper_value(app, "energy_v2_whole_site_load_w")
+    app.states[ENTITY_IDS["deye_inverter_power"]].pop("last_reported")
+    app._control_tick()
+    assert helper_value(app, "energy_v2_load_quality") != "VALID"
+    assert helper_value(app, "energy_v2_whole_site_load_w") == prior_load
+    assert "LAST KNOWN" in helper_value(app, "energy_v2_load_summary")
+    assert "checked=" in helper_value(app, "energy_v2_load_summary")
+    assert all(service.startswith("input_") for service, _ in app.services)
+    assert not app.turned_off
+
+
+def test_invalid_deye_state_config_blocks_enable() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.args["deye_state"] = {"startup_window_s": -1}
+    app.initialize()
+    assert any("deye_state" in reason for reason in app._config_errors)
+    assert helper_value(app, "energy_v2_safe_to_enable") == "off"
+
+
+def test_control_exception_invalidates_retained_load(monkeypatch) -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    app._control_tick()
+    prior_load = helper_value(app, "energy_v2_whole_site_load_w")
+
+    def broken(**kwargs):
+        raise RuntimeError("test observation failure")
+
+    monkeypatch.setattr(app.telemetry, "control_snapshot", broken)
+    app._control_tick()
+    assert helper_value(app, "energy_v2_load_quality") == "INVALID"
+    assert "LAST KNOWN" in helper_value(app, "energy_v2_load_summary")
+    assert helper_value(app, "energy_v2_whole_site_load_w") == prior_load

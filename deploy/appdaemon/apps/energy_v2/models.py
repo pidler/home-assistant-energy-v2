@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .deye_state import DeyeAssessment
 
 try:
     from enum import StrEnum
@@ -116,6 +120,10 @@ class NumericTelemetrySample:
     effective_timestamp: datetime | None = None
     telemetry_class: TelemetryClass = TelemetryClass.FAST_POWER
 
+    value_changed_at: datetime | None = None
+    observed_at: datetime | None = None
+    source_health_at: datetime | None = None
+
     @property
     def effective_fresh(self) -> bool:
         """Whether the value is usable after source-health policy is applied."""
@@ -139,6 +147,7 @@ class ControlTelemetrySnapshot:
     deye_source_healthy: bool = False
     solax_source_health_reason: str = ""
     deye_source_health_reason: str = ""
+    deye_operating: DeyeAssessment | None = None
 
 
 @dataclass(frozen=True)
@@ -214,6 +223,7 @@ class TelemetrySnapshot:
     deye_export_enabled: bool | None
     solax_inverter_power_w: float | None = None
     deye_inverter_power_w: float | None = None
+    deye_operating: DeyeAssessment | None = None
 
 
 @dataclass(frozen=True)

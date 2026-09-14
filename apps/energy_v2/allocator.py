@@ -157,6 +157,17 @@ class ShadowPowerAllocator:
             "; ".join(break_states) or "CLEAR",
         )
 
+    def invalidate_battery(self, battery: BatteryId) -> None:
+        """Forget slew output and require measured zero before any new direction.
+
+        Zero pending direction is a sentinel: the existing break-before-make path
+        must confirm zero feedback even after readiness returns. Other batteries
+        retain their history.
+        """
+        self._last_simulated_power[battery] = 0.0
+        self._pending_direction[battery] = 0
+        self._zero_since.pop(battery, None)
+
     def _allocate_discharge(
         self,
         required_w: float,

@@ -8,11 +8,13 @@ from math import isfinite
 from .adapters.deye import DeyeShadowAdapter
 from .adapters.solax import SolaxShadowAdapter
 from .allocator import AllocationResult, BatteryAvailability, ShadowPowerAllocator
+from .deye_state import DeyeOperatingState
 from .export_budget import ExportBudget, FixedQuarterExportTracker, trailing_window_budget
 from .flow import FlowDebouncer, FlowSnapshot, FlowState, FlowThresholds, RollingExportAverageTracker
 from .load_model import LoadEstimate, LoadModelParameters, estimate_whole_site_load
 from .models import (
     BatteryAction,
+    BatteryId,
     CommandResult,
     CommandStatus,
     ControlTelemetrySnapshot,
@@ -73,6 +75,10 @@ class ShadowControlCore:
         solax: BatteryAvailability,
     ) -> ShadowControlResult:
         now = telemetry.sampled_at
+        operating = telemetry.deye_operating
+        if operating is None or not operating.dispatch_ready:
+            deye = replace(deye, available=False)
+            self.allocator.invalidate_battery(BatteryId.DEYE)
         pv = self._total_pv(telemetry)
         load = estimate_whole_site_load(
             telemetry.solax_inverter_power,
@@ -80,6 +86,15 @@ class ShadowControlCore:
             telemetry.whole_site_grid_power,
             self.load_parameters,
         )
+        if operating is None or operating.state not in (DeyeOperatingState.READY, DeyeOperatingState.INTENTIONAL_OFF):
+            reason = (
+                "DEYE operating state unverified"
+                if operating is None
+                else f"DEYE {operating.state.value}: {operating.reason}"
+            )
+            load = LoadEstimate(None, TelemetryQuality.INVALID, reason, None)
+        elif load.load_w is not None:
+            load = replace(load, reason=f"{load.reason}; DEYE={operating.state.value}")
         grid_actual = telemetry.whole_site_grid_power.value
         if telemetry.whole_site_grid_power.quality is TelemetryQuality.VALID and grid_actual is not None:
             export_w = max(grid_actual, 0.0)
@@ -146,6 +161,14 @@ class ShadowControlCore:
             if telemetry.solax_battery_power.quality is TelemetryQuality.VALID
             else None
         )
+        # Final authority after all allocation, slew and transfer processing.
+        # No previous allocator output may survive a loss of confirmed READY.
+        if operating is None or not operating.dispatch_ready:
+            allocation = replace(
+                allocation,
+                deye=replace(allocation.deye, action=BatteryAction.HOLD, target_power_w=0.0),
+            )
+            self.allocator.invalidate_battery(BatteryId.DEYE)
         deye_result = self.deye_adapter.translate(allocation.deye, deye_actual)
         solax_result = self.solax_adapter.translate(
             allocation.solax,

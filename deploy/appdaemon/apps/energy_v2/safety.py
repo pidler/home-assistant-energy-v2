@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import math
 
+from .deye_state import DeyeOperatingState
 from .models import TelemetrySnapshot, ValidationResult
 
 
-def validate_telemetry(snapshot: TelemetrySnapshot) -> ValidationResult:
+def validate_telemetry(snapshot: TelemetrySnapshot, *, passive: bool = False) -> ValidationResult:
     reasons: list[str] = []
     if snapshot.deye_connected is not True:
         reasons.append("DEYE is not connected")
     deye_device_state = snapshot.deye_device_state.strip() if snapshot.deye_device_state is not None else None
-    if deye_device_state != "Normal":
+    operating = snapshot.deye_operating
+    intentional_off = passive and operating is not None and operating.state is DeyeOperatingState.INTENTIONAL_OFF
+    if operating is not None and not operating.dispatch_ready and not intentional_off:
+        reasons.append(f"DEYE is not dispatch-ready: {operating.state.value}: {operating.reason}")
+    if deye_device_state != "Normal" and not intentional_off:
         reasons.append(f"DEYE device state is {snapshot.deye_device_state!r}, expected 'Normal'")
     if snapshot.deye_soc_pct is None:
         reasons.append("DEYE SOC is missing")
