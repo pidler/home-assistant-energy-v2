@@ -14,8 +14,8 @@ from zoneinfo import ZoneInfo
 
 from .deye_state import DeyeOperatingState
 from .load_model import estimate_whole_site_load
-from .observations import observation_time
-from .telemetry import TelemetryReader
+from .observations import communication_time, observation_time
+from .telemetry import TelemetryReader, parse_bool_state
 from .trading.inputs import assemble_slots, build_time_of_day_load_profile
 from .trading.models import BatteryParameters, BatteryRole, PlannerConfig, PlannerInput
 from .trading.planner import plan_trading_schedule
@@ -203,7 +203,7 @@ class LiveAdapter:
     def collect(self, now):
         self.last_sources = {}
         snap = self.telemetry.control_snapshot(now=now)
-        state = snap.deye_operating.state
+        state, deye_reason = self._advisory_deye_state(snap, now)
         self.last_deye_state = state.value
         for sample in (
             snap.solax_soc,
@@ -214,7 +214,7 @@ class LiveAdapter:
         ):
             self.last_sources[sample.entity_id] = asdict(sample)
         if state not in (DeyeOperatingState.READY, DeyeOperatingState.INTENTIONAL_OFF):
-            raise ValueError(f"DEYE_NOT_READY: {state.value}; {snap.deye_operating.reason}")
+            raise ValueError(f"DEYE_NOT_READY: {state.value}; {deye_reason}")
         soc = {}
         for name, key in (("DEYE", "deye_soc"), ("SolaX", "solax_soc")):
             sample = self.telemetry.numeric_sample(key, now, self.config.soc_max_age_s)
@@ -262,6 +262,55 @@ class LiveAdapter:
         return LiveInputs(
             data, load.load_w, state.value, digest(raw_prices), digest(pv), self.last_sources.copy(), totals, warnings
         )
+
+    def _advisory_deye_state(self, snap, now):
+        """Use source-health evidence only for the Phase 5A advisory gate.
+
+        Phase 5B continues to use the strict DeyeStateAdapter result in the
+        control telemetry snapshot. Phase 5A does not command an inverter, so
+        unchanged on/Normal/OK feedback can be accepted when fresh connection
+        and AC-power evidence prove the DEYE source is alive.
+        """
+        strict = snap.deye_operating
+        if strict is not None and strict.state in (DeyeOperatingState.READY, DeyeOperatingState.INTENTIONAL_OFF):
+            return strict.state, strict.reason
+
+        entity_ids = self.telemetry.entity_ids
+        feedback = {
+            name: self.reader.get_state(entity_ids[key], attribute="all")
+            for name, key in (
+                ("switch", "deye_switch"),
+                ("state", "deye_device_state"),
+                ("fault", "deye_device_fault"),
+                ("connection", "deye_connection"),
+            )
+        }
+        self.last_sources.update({f"advisory_{name}": raw for name, raw in feedback.items()})
+        if not isinstance(feedback["switch"], dict) or parse_bool_state(feedback["switch"].get("state")) is not True:
+            return DeyeOperatingState.UNAVAILABLE, "DEYE switch is not on"
+        if not isinstance(feedback["state"], dict) or feedback["state"].get("state") != "Normal":
+            return DeyeOperatingState.UNAVAILABLE, "DEYE device state is not Normal"
+        if not isinstance(feedback["fault"], dict) or feedback["fault"].get("state") != "OK":
+            return DeyeOperatingState.UNAVAILABLE, "DEYE device fault is not OK"
+
+        connection = feedback["connection"]
+        connection_at = communication_time(connection, now)
+        maximum_age_s = self.telemetry.freshness.deye_fast_power_max_age_s
+        connection_age_s = (now - connection_at).total_seconds() if connection_at is not None else None
+        if (
+            not isinstance(connection, dict)
+            or parse_bool_state(connection.get("state")) is not True
+            or connection_at is None
+            or connection_age_s is None
+            or connection_age_s > maximum_age_s
+        ):
+            return DeyeOperatingState.UNAVAILABLE, "DEYE connection/source receipt is stale or unavailable"
+
+        power = self.telemetry.numeric_sample("deye_inverter_power", now, maximum_age_s)
+        self.last_sources[power.entity_id] = asdict(power)
+        if not power.fresh or power.value is None:
+            return DeyeOperatingState.UNAVAILABLE, "DEYE AC power feedback is stale or invalid"
+        return DeyeOperatingState.READY, "Phase 5A advisory source health confirmed"
 
 
 def action_for(slot):
