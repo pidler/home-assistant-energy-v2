@@ -707,7 +707,7 @@ class EnergyV2App(hass.Hass):
         self._set_helper("energy_v2_rolling_15min_export_w", f"{assessment.rolling_average.average_w:.3f}")
         self._set_helper("energy_v2_export_window_covered_s", f"{assessment.rolling_average.covered_duration_s:.3f}")
         if assessment.rolling_average.last_sample_age_s is not None:
-            self._set_helper("energy_v2_export_sample_age_s", f"{assessment.rolling_average.last_sample_age_s:.3f}")
+            self._publish_export_sample_age(assessment.rolling_average.last_sample_age_s)
         self._set_helper("energy_v2_export_limit_state", assessment.state.value)
         self._set_helper("energy_v2_export_limit_summary", summarize_export_limit(assessment))
         if assessment.violations:
@@ -715,13 +715,24 @@ class EnergyV2App(hass.Hass):
 
     def _publish_unknown_export_limit_diagnostics(self) -> None:
         average = self.export_average_tracker.average(datetime.now().astimezone())
+        raw_age_note = ""
         if average.last_sample_age_s is not None:
-            self._set_helper("energy_v2_export_sample_age_s", f"{average.last_sample_age_s:.3f}")
+            self._publish_export_sample_age(average.last_sample_age_s)
+            raw_age_note = f"; last valid sample age={average.last_sample_age_s:.0f} s"
         self._set_helper("energy_v2_export_limit_state", "UNKNOWN")
         self._set_helper(
             "energy_v2_export_limit_summary",
-            "UNKNOWN: telemetry is not valid; numeric export helpers contain last known values",
+            "UNKNOWN: telemetry is not valid; numeric export helpers contain last known values" + raw_age_note,
         )
+
+    def _publish_export_sample_age(self, raw_age_s: float) -> None:
+        """Publish a bounded display value without changing raw stale-sample semantics."""
+        helper = self.get_state(self.entity_ids["energy_v2_export_sample_age_s"], attribute="all")
+        attributes = helper.get("attributes") if isinstance(helper, dict) else None
+        maximum = parse_float_state(attributes.get("max")) if isinstance(attributes, dict) else None
+        if maximum is None or maximum < 0:
+            return
+        self._set_helper("energy_v2_export_sample_age_s", f"{min(raw_age_s, maximum):.3f}")
 
     def _system_parameters_from_args(self) -> SystemParameters:
         defaults = SystemParameters()
