@@ -11,6 +11,7 @@ import yaml
 
 from apps.energy_v2.config import DEFAULT_CONFLICTING_AUTOMATIONS, ENTITY_IDS, OPTIONAL_TELEMETRY_KEYS, OWNED_ACTUATORS
 from apps.energy_v2.diagnostics import compact_reasons
+from apps.energy_v2.flow import RollingExportAverageTracker, assess_export_limit
 from apps.energy_v2.models import Mode
 
 
@@ -187,6 +188,48 @@ def valid_states() -> dict[str, Any]:
 
 def helper_value(app: StubHass, key: str) -> Any:
     return app.states[ENTITY_IDS[key]]
+
+
+def _export_sample_age_helper(maximum: float = 3600.0) -> dict[str, Any]:
+    return {"state": "0", "attributes": {"max": maximum}}
+
+
+def test_export_sample_age_publication_preserves_raw_stale_semantics() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.states[ENTITY_IDS["energy_v2_export_sample_age_s"]] = _export_sample_age_helper()
+    app.initialize()
+
+    tracker = RollingExportAverageTracker(max_sample_age_s=120.0)
+    start = datetime(2026, 9, 23, 0, 0, 0)
+    tracker.add_sample(start, 1000.0)
+
+    for raw_age_s, expected_display in ((10.0, 10.0), (3600.0, 3600.0), (214000.0, 3600.0)):
+        app.states[ENTITY_IDS["energy_v2_export_sample_age_s"]] = _export_sample_age_helper()
+        average = tracker.average(start + timedelta(seconds=raw_age_s))
+        assessment = assess_export_limit(1000.0, average)
+        app._publish_export_limit_diagnostics(assessment)
+
+        assert average.last_sample_age_s == raw_age_s
+        assert float(helper_value(app, "energy_v2_export_sample_age_s")) == expected_display
+        if raw_age_s > 120.0:
+            assert average.stale
+            assert assessment.state.value == "UNKNOWN"
+
+
+def test_export_sample_age_does_not_publish_without_authoritative_helper_maximum() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    entity_id = ENTITY_IDS["energy_v2_export_sample_age_s"]
+    app.states[entity_id] = {"state": "0", "attributes": {}}
+    app.initialize()
+    app.services.clear()
+
+    app._publish_export_sample_age(214000.0)
+
+    assert app.services == []
 
 
 def test_phase4_control_tick_publishes_helpers_only() -> None:
