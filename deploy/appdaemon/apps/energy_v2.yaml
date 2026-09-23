@@ -78,3 +78,69 @@ energy_v2:
     - automation.spust_vybijeno_deye_v_konkretni_cas
     - automation.vypne_vybijeni_deye_a_zapne_self_use_mod_na_solaxu
     - automation.zpnout_nabijeni_deye_v_ucity_cas
+
+# Advisory-only, separate from Phase 4. Installation/restart is a future operation.
+energy_v2_phase5a_advisory:
+  module: energy_v2.advisory_app
+  class: Phase5AdvisoryApp
+  advisory:
+    timezone: Europe/Prague
+    minimum_interval_s: 120
+    debounce_s: 20
+    soc_delta_pct: 3
+    load_delta_w: 300
+    horizon_refresh_s: 1800
+    profile_max_age_s: 21600
+    soc_max_age_s: 1800
+
+# Phase 5B observer/publisher only. This app has no inverter control configuration.
+energy_v2_phase5b_shadow_executor:
+  module: energy_v2.executor_shadow_app
+  class: Phase5BShadowExecutorApp
+  phase5b_shadow:
+    cadence_s: 10
+    persistence_path: /config/energy_v2/phase5b_shadow_state.json
+    shadow_only: true
+    telemetry_max_age_s: 60
+    control_max_age_s: 30
+    planner_max_age_s: 60
+    allow_last_updated_fallback: false
+    # Positive capability flags require a separately verified UTC timestamp.
+    # Pass 4 defaults remain fail-closed until supervised capability verification.
+    capabilities:
+      solax_mode1_dispatch_verified: false
+      solax_mode5_hold_verified: false
+      solax_timeout_verified: false
+      deye_start_verified: false
+      deye_hold_verified: false
+      deye_bounded_export_verified: false
+    entity_map:
+      solax_soc: sensor.solax_battery_capacity
+      solax_battery_power: sensor.solax_battery_power_charge
+      solax_inverter_power: sensor.solax_inverter_power
+      solax_pv_power: sensor.solax_pv_power_total
+      pcc: sensor.solax_measured_power
+      solax_charger_mode: select.solax_charger_use_mode
+      solax_manual_mode: select.solax_manual_mode_select
+      solax_operating_state: sensor.solax_run_mode
+      solax_remote_control: sensor.solax_modbus_power_control
+      # No independent live SolaX fault source has been verified; fail closed.
+      solax_fault: null
+      deye_soc: sensor.deye_battery
+      # Raw source is normalized in the adapter: positive discharge -> negative.
+      deye_battery_power: sensor.deye_battery_power
+      deye_inverter_power: sensor.deye_power
+      deye_device_state: sensor.deye_device_state
+      deye_device_fault: sensor.deye_device_fault
+      deye_connection: binary_sensor.deye_connection
+      deye_switch: switch.deye
+      deye_work_mode: select.deye_work_mode
+      deye_time_of_use: select.deye_time_of_use
+      deye_export_surplus: switch.deye_export_surplus
+      deye_grid_charging: switch.deye_battery_grid_charging
+      execution_enabled: input_boolean.energy_v2_control_shadow_enabled
+      writer_conflicts: input_text.energy_v2_active_conflicts
+      rolling_export_w: input_number.energy_v2_rolling_15min_export_w
+      rolling_export_covered_s: input_number.energy_v2_export_window_covered_s
+      planner_intent: sensor.energy_v2_phase5a_executor_intent
+      planner_status: sensor.energy_v2_phase5a_status
