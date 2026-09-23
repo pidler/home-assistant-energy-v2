@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 import types
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ class StubHass:
         self.args: dict[str, Any] = {"charge_shadow": {}}
         self.states: dict[str, Any] = {}
         self.services: list[tuple[str, dict[str, Any]]] = []
+        self.service_results: deque[dict[str, Any]] = deque()
         self.logs: list[tuple[str, str]] = []
         self.listeners: list[str] = []
         self.timers: list[tuple[str, int | str]] = []
@@ -54,8 +56,11 @@ class StubHass:
             return value.get("state")
         return value
 
-    def call_service(self, service: str, **kwargs: Any) -> None:
+    def call_service(self, service: str, **kwargs: Any) -> dict[str, Any]:
         self.services.append((service, kwargs))
+        result = self.service_results.popleft() if self.service_results else {"success": True, "ad_status": "OK"}
+        if result.get("success") is not True or result.get("ad_status", "OK") != "OK":
+            return result
         entity_id = kwargs["entity_id"]
         if service == "input_boolean/turn_on":
             self.states[entity_id] = "on"
@@ -67,6 +72,7 @@ class StubHass:
             self.states[entity_id] = kwargs["value"]
         elif "datetime" in kwargs:
             self.states[entity_id] = kwargs["datetime"]
+        return result
 
     def turn_off(self, entity_id: str) -> None:
         self.turned_off.append(entity_id)
@@ -539,6 +545,74 @@ def test_successful_shadow_tick_sets_last_successful_evaluation_time() -> None:
 
     assert helper_value(app, "energy_v2_app_status") == "HEALTHY"
     assert helper_value(app, "energy_v2_last_successful_evaluation")
+
+
+def test_successful_helper_publication_keeps_app_health_healthy() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    app._set_core_app_status(module.AppStatus.HEALTHY)
+
+    assert app._set_helper("energy_v2_heartbeat", "2026-09-23T12:00:00+02:00") is True
+    assert helper_value(app, "energy_v2_app_status") == "HEALTHY"
+
+
+def test_single_helper_publication_failure_does_not_degrade_app_health() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    app._set_core_app_status(module.AppStatus.HEALTHY)
+    app.service_results.append(
+        {"success": False, "ad_status": "OK", "error": {"code": "invalid_format", "message": "out of range"}}
+    )
+
+    assert app._set_helper("energy_v2_export_sample_age_s", "214000") is False
+
+    assert helper_value(app, "energy_v2_app_status") == "HEALTHY"
+    assert app._publication_failures["energy_v2_export_sample_age_s"] == 1
+
+
+def test_repeated_helper_publication_failures_degrade_and_recover_app_health() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    app._set_core_app_status(module.AppStatus.HEALTHY)
+    failure = {"success": False, "ad_status": "OK", "error": {"code": "invalid_format", "message": "out of range"}}
+
+    for _ in range(3):
+        app.service_results.append(dict(failure))
+        assert app._set_helper("energy_v2_export_sample_age_s", "214000") is False
+
+    assert helper_value(app, "energy_v2_app_status") == "DEGRADED"
+    assert app._publication_failures["energy_v2_export_sample_age_s"] == 3
+
+    assert app._set_helper("energy_v2_export_sample_age_s", "10") is True
+
+    assert helper_value(app, "energy_v2_app_status") == "HEALTHY"
+    assert "energy_v2_export_sample_age_s" not in app._publication_failures
+
+
+def test_publication_failure_does_not_change_shadow_planner_or_freshness_state() -> None:
+    module = import_app_module()
+    app = module.EnergyV2App()
+    app.states = valid_states()
+    app.initialize()
+    app._shadow_tick()
+    decision_before = app._last_decision
+    freshness_before = app.telemetry_freshness
+    export_limit_before = helper_value(app, "energy_v2_export_limit_state")
+    app.service_results.append(
+        {"success": False, "ad_status": "OK", "error": {"code": "invalid_format", "message": "out of range"}}
+    )
+
+    assert app._set_helper("energy_v2_export_sample_age_s", "214000") is False
+
+    assert app._last_decision == decision_before
+    assert app.telemetry_freshness == freshness_before
+    assert helper_value(app, "energy_v2_export_limit_state") == export_limit_before
 
 
 def test_flow_helpers_are_written_on_successful_shadow_tick() -> None:

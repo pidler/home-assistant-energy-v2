@@ -81,6 +81,8 @@ class EnergyV2App(hass.Hass):
     Phases 1-4 intentionally perform no physical SolaX/DEYE control.
     """
 
+    _PUBLICATION_FAILURE_THRESHOLD = 3
+
     def initialize(self) -> None:
         self.log_prefix = "ENERGY_V2"
         self.entity_ids = dict(ENTITY_IDS)
@@ -174,10 +176,13 @@ class EnergyV2App(hass.Hass):
         self._missing_owned_actuators: tuple[str, ...] = ()
         self._charge_conflict_times: deque[datetime] = deque()
         self._charge_last_mismatch = ""
+        self._publication_failures: dict[str, int] = {}
+        self._publication_degraded = False
+        self._core_app_status = AppStatus.STARTING
 
         self._info("initializing passive shadow application")
         self._refresh_energy_v2_helper_existence()
-        self._set_helper("energy_v2_app_status", app_status_value(AppStatus.STARTING))
+        self._set_core_app_status(AppStatus.STARTING)
         self._validate_required_entity_configuration()
         self._register_state_listeners()
         self.run_every(self._shadow_tick, "now+5", 15 * 60)
@@ -195,7 +200,7 @@ class EnergyV2App(hass.Hass):
         missing_keys = [key for key, entity_id in self.entity_ids.items() if not entity_id]
         if missing_keys:
             self._error("missing configured entity IDs: %s", ", ".join(missing_keys))
-            self._set_helper("energy_v2_app_status", app_status_value(AppStatus.CONFIG_ERROR))
+            self._set_core_app_status(AppStatus.CONFIG_ERROR)
 
     def _register_state_listeners(self) -> None:
         watched_keys = (
@@ -317,7 +322,7 @@ class EnergyV2App(hass.Hass):
                 self._set_helper("energy_v2_actual_mode", mode_value(Mode.DISABLED))
                 self._set_helper("energy_v2_last_fault", fault_text)
                 self._set_helper("energy_v2_last_evaluation_error", fault_text)
-                self._set_helper("energy_v2_app_status", app_status_value(AppStatus.CONFIG_ERROR))
+                self._set_core_app_status(AppStatus.CONFIG_ERROR)
                 self.turn_off(self.entity_ids["energy_v2_enabled"])
                 self._warn_once_fault(fault_text)
             elif energy_v2_enabled:
@@ -352,7 +357,7 @@ class EnergyV2App(hass.Hass):
         except Exception as exc:  # pragma: no cover - AppDaemon runtime guard
             error_text = f"unexpected shadow tick error: {exc!r}"
             self._set_helper("energy_v2_last_evaluation_error", error_text)
-            self._set_helper("energy_v2_app_status", app_status_value(AppStatus.DEGRADED))
+            self._set_core_app_status(AppStatus.DEGRADED)
             self._error(error_text)
         finally:
             self._shadow_tick_running = False
@@ -370,7 +375,7 @@ class EnergyV2App(hass.Hass):
         except Exception as exc:  # pragma: no cover - AppDaemon runtime guard
             error_text = f"unexpected flow tick error: {exc!r}"
             self._set_helper("energy_v2_last_evaluation_error", error_text)
-            self._set_helper("energy_v2_app_status", app_status_value(AppStatus.DEGRADED))
+            self._set_core_app_status(AppStatus.DEGRADED)
             self._error(error_text)
         finally:
             self._flow_tick_running = False
@@ -642,25 +647,72 @@ class EnergyV2App(hass.Hass):
             self.get_state(self.entity_ids["energy_v2_shadow_mode"]),
         )
 
-    def _set_helper(self, key: str, value: str) -> None:
+    def _set_helper(self, key: str, value: str) -> bool:
         entity_id = self.entity_ids[key]
         if entity_id in self._missing_energy_v2_helpers:
             self._error("refusing to write missing helper %s", entity_id)
-            return
+            return False
         domain = entity_id.split(".", 1)[0]
         if domain == "input_select":
-            self.call_service("input_select/select_option", entity_id=entity_id, option=value)
+            service, data = "input_select/select_option", {"option": value}
         elif domain == "input_text":
-            self.call_service("input_text/set_value", entity_id=entity_id, value=value[:255])
+            service, data = "input_text/set_value", {"value": value[:255]}
         elif domain == "input_datetime":
-            self.call_service("input_datetime/set_datetime", entity_id=entity_id, datetime=value)
+            service, data = "input_datetime/set_datetime", {"datetime": value}
         elif domain == "input_number" and key.startswith("energy_v2_"):
-            self.call_service("input_number/set_value", entity_id=entity_id, value=float(value))
+            service, data = "input_number/set_value", {"value": float(value)}
         elif domain == "input_boolean" and key == "energy_v2_safe_to_enable":
             service = "input_boolean/turn_on" if value == "on" else "input_boolean/turn_off"
-            self.call_service(service, entity_id=entity_id)
+            data = {}
         else:
             self._error("refusing to write unsupported helper domain for %s", entity_id)
+            return False
+
+        try:
+            result = self.call_service(service, entity_id=entity_id, **data)
+        except Exception as exc:  # pragma: no cover - defensive AppDaemon guard
+            self._record_publication_failure(key, entity_id, f"exception: {exc!r}")
+            return False
+        if not self._publication_succeeded(result):
+            self._record_publication_failure(key, entity_id, self._publication_error_detail(result))
+            return False
+        self._record_publication_success(key)
+        return True
+
+    @staticmethod
+    def _publication_succeeded(result: Any) -> bool:
+        """Interpret the structured AppDaemon 4.5 service-call acknowledgement."""
+        return isinstance(result, dict) and result.get("success") is True and result.get("ad_status", "OK") == "OK"
+
+    @staticmethod
+    def _publication_error_detail(result: Any) -> str:
+        if not isinstance(result, dict):
+            return f"unexpected result: {result!r}"
+        return (
+            f"success={result.get('success')!r}; ad_status={result.get('ad_status')!r}; error={result.get('error')!r}"
+        )
+
+    def _record_publication_failure(self, key: str, entity_id: str, detail: str) -> None:
+        failures = self._publication_failures.get(key, 0) + 1
+        self._publication_failures[key] = failures
+        self._error("helper publication failed entity=%s consecutive=%s detail=%s", entity_id, failures, detail)
+        if key != "energy_v2_app_status" and failures >= self._PUBLICATION_FAILURE_THRESHOLD:
+            self._publication_degraded = True
+            self._set_helper("energy_v2_app_status", app_status_value(AppStatus.DEGRADED))
+
+    def _record_publication_success(self, key: str) -> None:
+        was_degraded = self._publication_degraded
+        self._publication_failures.pop(key, None)
+        self._publication_degraded = any(
+            failures >= self._PUBLICATION_FAILURE_THRESHOLD for failures in self._publication_failures.values()
+        )
+        if was_degraded and not self._publication_degraded and key != "energy_v2_app_status":
+            self._set_helper("energy_v2_app_status", app_status_value(self._core_app_status))
+
+    def _set_core_app_status(self, status: AppStatus) -> None:
+        self._core_app_status = status
+        published = AppStatus.DEGRADED if self._publication_degraded and status == AppStatus.HEALTHY else status
+        self._set_helper("energy_v2_app_status", app_status_value(published))
 
     def _set_safe_to_enable_helper(self, safe: bool) -> None:
         self._set_helper("energy_v2_safe_to_enable", "on" if safe else "off")
@@ -856,14 +908,14 @@ class EnergyV2App(hass.Hass):
         self._set_helper("energy_v2_actual_mode", mode_value(Mode.DISABLED))
         self._set_helper("energy_v2_last_evaluation_error", error_text)
         self._set_helper("energy_v2_last_successful_evaluation", heartbeat_value())
-        self._set_helper("energy_v2_app_status", app_status_value(status))
+        self._set_core_app_status(status)
 
     def _mark_shadow_disabled_evaluation(self, status: AppStatus, error_text: str) -> None:
         self._set_helper("energy_v2_requested_mode", mode_value(Mode.DISABLED))
         self._set_helper("energy_v2_actual_mode", mode_value(Mode.DISABLED))
         self._set_helper("energy_v2_last_evaluation_error", error_text)
         self._set_helper("energy_v2_last_successful_evaluation", heartbeat_value())
-        self._set_helper("energy_v2_app_status", app_status_value(status))
+        self._set_core_app_status(status)
 
     def _warn_once_fault(self, text: str) -> None:
         if text != self._last_fault_text:
