@@ -217,7 +217,7 @@ class LiveAdapter:
             raise ValueError(f"DEYE_NOT_READY: {state.value}; {deye_reason}")
         soc = {}
         for name, key in (("DEYE", "deye_soc"), ("SolaX", "solax_soc")):
-            sample = self.telemetry.numeric_sample(key, now, self.config.soc_max_age_s)
+            sample = self._advisory_soc_sample(key, snap, now)
             if not sample.fresh or sample.value is None or not 0 <= sample.value <= 100:
                 raise ValueError(f"{name}: stale/invalid SOC")
             self.last_sources[sample.entity_id] = asdict(sample)
@@ -262,6 +262,12 @@ class LiveAdapter:
         return LiveInputs(
             data, load.load_w, state.value, digest(raw_prices), digest(pv), self.last_sources.copy(), totals, warnings
         )
+
+    def _advisory_soc_sample(self, key, snapshot, now):
+        """Use source-health-backed SolaX SOC only for Phase 5A advisory planning."""
+        if key == "solax_soc":
+            return snapshot.solax_soc
+        return self.telemetry.numeric_sample(key, now, self.config.soc_max_age_s)
 
     def _advisory_deye_state(self, snap, now):
         """Use source-health evidence only for the Phase 5A advisory gate.

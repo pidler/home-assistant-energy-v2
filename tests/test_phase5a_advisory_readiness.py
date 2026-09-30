@@ -53,6 +53,47 @@ def test_phase5a_blocks_stale_connection_or_power() -> None:
         assert state is DeyeOperatingState.UNAVAILABLE
 
 
+def test_phase5a_accepts_stale_unchanged_solax_soc_with_fresh_source_health() -> None:
+    states = control_states()
+    states[ENTITY_IDS["solax_soc"]] = timestamped(96, 9_000)
+    adapter = LiveAdapter(MappingReader(states), object())
+    snapshot = adapter.telemetry.control_snapshot(now=NOW)
+
+    sample = adapter._advisory_soc_sample("solax_soc", snapshot, NOW)
+
+    assert sample.value == 96
+    assert sample.age_s == 9_000
+    assert sample.source_healthy
+    assert sample.fresh
+
+
+def test_phase5a_rejects_stale_solax_soc_without_fresh_source_health() -> None:
+    states = control_states()
+    states[ENTITY_IDS["solax_soc"]] = timestamped(96, 9_000)
+    states[ENTITY_IDS["solax_inverter_power"]] = timestamped(1000, 9_000)
+    states[ENTITY_IDS["solax_battery_power"]] = timestamped(0, 9_000)
+    adapter = LiveAdapter(MappingReader(states), object())
+    snapshot = adapter.telemetry.control_snapshot(now=NOW)
+
+    sample = adapter._advisory_soc_sample("solax_soc", snapshot, NOW)
+
+    assert sample.value == 96
+    assert not sample.source_healthy
+    assert not sample.fresh
+
+
+def test_phase5a_rejects_invalid_solax_soc_even_with_fresh_source_health() -> None:
+    states = control_states()
+    states[ENTITY_IDS["solax_soc"]] = timestamped("not-a-number", 9_000)
+    adapter = LiveAdapter(MappingReader(states), object())
+    snapshot = adapter.telemetry.control_snapshot(now=NOW)
+
+    sample = adapter._advisory_soc_sample("solax_soc", snapshot, NOW)
+
+    assert sample.value is None
+    assert not sample.fresh
+
+
 def test_phase5b_strict_readiness_is_unchanged_for_stale_stable_feedback() -> None:
     adapter, snapshot = advisory_adapter()
 
