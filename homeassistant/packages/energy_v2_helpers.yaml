@@ -27,7 +27,26 @@ input_boolean:
     name: ENERGY V2 Phase 4 control shadow povolen
     initial: false
 
+  energy_v2_physical_execution_enabled:
+    name: ENERGY V2 fyzicky executor povolen
+    initial: false
+
 input_select:
+  energy_v2_execution_authority:
+    name: ENERGY V2 autorita rizeni
+    options: [LEGACY, ENERGY_V2_EXECUTOR]
+    initial: LEGACY
+
+  energy_v2_slot_executor_state:
+    name: ENERGY V2 stav slot executoru
+    options: [IDLE, PREPARE, EXECUTE_DEYE, EXECUTE_SOLAX, HOLD, COMPLETE, ROLLBACK, FAULT]
+    initial: IDLE
+
+  energy_v2_current_inverter_owner:
+    name: ENERGY V2 aktualni vlastnik rizeni
+    options: [NONE, DEYE, SOLAX]
+    initial: NONE
+
   energy_v2_strategy:
     name: ENERGY V2 strategie
     options:
@@ -125,6 +144,70 @@ input_select:
     initial: BLOCKED
 
 input_number:
+  energy_v2_haeo_deye_target_kw:
+    name: ENERGY V2 HAEO DEYE cil
+    min: -30
+    max: 30
+    step: 0.001
+    unit_of_measurement: kW
+    initial: 0
+
+  energy_v2_haeo_solax_target_kw:
+    name: ENERGY V2 HAEO SolaX cil
+    min: -30
+    max: 30
+    step: 0.001
+    unit_of_measurement: kW
+    initial: 0
+
+  energy_v2_deye_target_energy_kwh:
+    name: ENERGY V2 DEYE cilova energie slotu
+    min: 0
+    max: 20
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_deye_delivered_energy_kwh:
+    name: ENERGY V2 DEYE dodana energie slotu
+    min: 0
+    max: 20
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_deye_remaining_energy_kwh:
+    name: ENERGY V2 DEYE zbyvajici energie slotu
+    min: 0
+    max: 20
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_solax_target_energy_kwh:
+    name: ENERGY V2 SolaX cilova energie slotu
+    min: 0
+    max: 20
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_solax_delivered_energy_kwh:
+    name: ENERGY V2 SolaX dodana energie slotu
+    min: 0
+    max: 20
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
+  energy_v2_solax_remaining_energy_kwh:
+    name: ENERGY V2 SolaX zbyvajici energie slotu
+    min: 0
+    max: 20
+    step: 0.001
+    unit_of_measurement: kWh
+    initial: 0
+
   energy_v2_deye_fv_ledger:
     name: ENERGY V2 DEYE FV energie k prodeji
     min: 0
@@ -444,6 +527,14 @@ input_number:
     initial: 0
 
 input_text:
+  energy_v2_slot_hold_reason:
+    name: ENERGY V2 duvod hold nebo defer
+    max: 255
+
+  energy_v2_slot_rollback_reason:
+    name: ENERGY V2 duvod rollbacku
+    max: 255
+
   energy_v2_last_fault:
     name: ENERGY V2 posledni chyba
     max: 255
@@ -509,6 +600,11 @@ input_text:
     max: 255
 
 input_datetime:
+  energy_v2_last_successful_restore:
+    name: ENERGY V2 posledni uspesny restore
+    has_date: true
+    has_time: true
+
   energy_v2_heartbeat:
     name: ENERGY V2 heartbeat
     has_date: true

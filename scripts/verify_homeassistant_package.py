@@ -15,6 +15,7 @@ REQUIRED_HELPERS: dict[str, set[str]] = {
         "energy_v2_service_mode",
         "energy_v2_safe_to_enable",
         "energy_v2_control_shadow_enabled",
+        "energy_v2_physical_execution_enabled",
     },
     "input_select": {
         "energy_v2_strategy",
@@ -26,6 +27,9 @@ REQUIRED_HELPERS: dict[str, set[str]] = {
         "energy_v2_load_quality",
         "energy_v2_anti_transfer_state",
         "energy_v2_command_status",
+        "energy_v2_execution_authority",
+        "energy_v2_slot_executor_state",
+        "energy_v2_current_inverter_owner",
     },
     "input_text": {
         "energy_v2_last_fault",
@@ -39,6 +43,8 @@ REQUIRED_HELPERS: dict[str, set[str]] = {
         "energy_v2_load_summary",
         "energy_v2_break_before_make_state",
         "energy_v2_saturation_reason",
+        "energy_v2_slot_hold_reason",
+        "energy_v2_slot_rollback_reason",
     },
     "input_datetime": {
         "energy_v2_heartbeat",
@@ -47,6 +53,7 @@ REQUIRED_HELPERS: dict[str, set[str]] = {
         "energy_v2_last_export_average_violation",
         "energy_v2_last_valid_export_sample",
         "energy_v2_command_expiry",
+        "energy_v2_last_successful_restore",
     },
     "input_number": {
         "energy_v2_deye_fv_ledger",
@@ -77,6 +84,14 @@ REQUIRED_HELPERS: dict[str, set[str]] = {
         "energy_v2_trailing_remaining_legal_kwh",
         "energy_v2_trailing_budget_power_w",
         "energy_v2_trailing_projected_average_w",
+        "energy_v2_haeo_deye_target_kw",
+        "energy_v2_haeo_solax_target_kw",
+        "energy_v2_deye_target_energy_kwh",
+        "energy_v2_deye_delivered_energy_kwh",
+        "energy_v2_deye_remaining_energy_kwh",
+        "energy_v2_solax_target_energy_kwh",
+        "energy_v2_solax_delivered_energy_kwh",
+        "energy_v2_solax_remaining_energy_kwh",
     },
 }
 
@@ -87,6 +102,10 @@ EXPECTED_INITIALS: dict[tuple[str, str], str] = {
     ("input_boolean", "energy_v2_service_mode"): "false",
     ("input_boolean", "energy_v2_safe_to_enable"): "false",
     ("input_boolean", "energy_v2_control_shadow_enabled"): "false",
+    ("input_boolean", "energy_v2_physical_execution_enabled"): "false",
+    ("input_select", "energy_v2_execution_authority"): "LEGACY",
+    ("input_select", "energy_v2_slot_executor_state"): "IDLE",
+    ("input_select", "energy_v2_current_inverter_owner"): "NONE",
     ("input_select", "energy_v2_strategy"): "SUMMER_NO_GRID_CHARGE",
     ("input_select", "energy_v2_requested_mode"): "DISABLED",
     ("input_select", "energy_v2_actual_mode"): "DISABLED",

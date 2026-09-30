@@ -10,6 +10,7 @@ from .enums import (
     SafetyAction,
     TransitionPhase,
 )
+from .haeo_plan import BatteryEnergyBudget, CurrentSlotPlan, HaeoPlanAdapter, PlanAdaptation
 from .models import (
     CapabilitySnapshot,
     CommandObservation,
@@ -20,22 +21,31 @@ from .models import (
     PlannerIntent,
     StabilityEvidence,
 )
+from .slot_executor import EnergyAccount, SlotExecutionSession, SlotExecutorDecision, SlotSafetyStatus
 
 __all__ = [
     "CapabilitySnapshot",
+    "BatteryEnergyBudget",
     "CommandLifecycleState",
     "CommandObservation",
     "CommandRecord",
+    "CurrentSlotPlan",
+    "EnergyAccount",
     "ExecutionContext",
     "ExecutionState",
     "ExecutorDecision",
     "FailureReason",
+    "HaeoPlanAdapter",
     "PhysicalRole",
     "PhysicalResponseAcceptance",
     "PhysicalRoleVector",
     "PlannerIntent",
     "PlannerIntentType",
+    "PlanAdaptation",
     "SafetyAction",
+    "SlotExecutionSession",
+    "SlotExecutorDecision",
+    "SlotSafetyStatus",
     "StabilityEvidence",
     "TransitionPhase",
 ]
