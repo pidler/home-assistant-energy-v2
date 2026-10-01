@@ -1,0 +1,639 @@
+from __future__ import annotations
+
+from dataclasses import fields, replace
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from apps.energy_v3 import (
+    CapabilityLevel,
+    CurrentTarget,
+    DecisionReason,
+    DecisionState,
+    DeyeCapabilities,
+    ExportAuthorization,
+    SafetyConfig,
+    SafetySnapshot,
+    SolaxCapabilities,
+    V3Capabilities,
+    decide,
+)
+
+NOW = datetime(2026, 9, 30, 12, 5, tzinfo=UTC)
+
+
+def target(*, solax_w: float = 0.0, deye_w: float = 0.0, **changes: object) -> CurrentTarget:
+    values: dict[str, object] = {
+        "timestamp": NOW - timedelta(minutes=5),
+        "valid_until": NOW + timedelta(minutes=10),
+        "solax_target_w": solax_w,
+        "deye_target_w": deye_w,
+    }
+    values.update(changes)
+    return CurrentTarget(**values)  # type: ignore[arg-type]
+
+
+def authorization(*, max_export_w: float = 9_800.0, **changes: object) -> ExportAuthorization:
+    values: dict[str, object] = {
+        "timestamp": NOW - timedelta(minutes=5),
+        "valid_until": NOW + timedelta(minutes=10),
+        "max_pcc_export_w": max_export_w,
+    }
+    values.update(changes)
+    return ExportAuthorization(**values)  # type: ignore[arg-type]
+
+
+def safe(**changes: object) -> SafetySnapshot:
+    values: dict[str, object] = {
+        "telemetry_fresh": True,
+        "solax_soc": 60.0,
+        "deye_soc": 60.0,
+        "pcc_export_w": 0.0,
+        "export_authorization": authorization(),
+        "solax_available": True,
+        "deye_available": True,
+        "solax_fault": False,
+        "deye_fault": False,
+        "measured_solax_battery_power_w": 0.0,
+        "measured_deye_battery_power_w": 0.0,
+        "writer_conflict": False,
+    }
+    values.update(changes)
+    return SafetySnapshot(**values)  # type: ignore[arg-type]
+
+
+def verified(
+    *,
+    solax_discharge: bool = False,
+    solax_charge: bool = False,
+    deye_export: bool = False,
+    deye_charge: bool = False,
+    deye_enter_export: bool = True,
+) -> V3Capabilities:
+    level = CapabilityLevel.VERIFIED
+    unsupported = CapabilityLevel.UNSUPPORTED
+    return V3Capabilities(
+        solax=SolaxCapabilities(
+            set_power_discharge=level if solax_discharge else unsupported,
+            set_power_charge=level if solax_charge else unsupported,
+        ),
+        deye=DeyeCapabilities(
+            enter_export=level if deye_enter_export else unsupported,
+            export_power=level if deye_export else unsupported,
+            charge_power=level if deye_charge else unsupported,
+        ),
+    )
+
+
+def run(
+    current: CurrentTarget,
+    snapshot: SafetySnapshot | None = None,
+    *,
+    now: datetime = NOW,
+    config: SafetyConfig | None = None,
+    capabilities: V3Capabilities | None = None,
+):
+    return decide(current, snapshot or safe(), now=now, config=config, capabilities=capabilities)
+
+
+def test_valid_target_is_accepted_for_verified_capability() -> None:
+    result = run(target(solax_w=2_000), capabilities=verified(solax_discharge=True))
+
+    assert result.state is DecisionState.CONTROL_SOLAX
+    assert result.reason is DecisionReason.CONTROL_ALLOWED
+    assert result.target_w == 2_000
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"valid_until": NOW},
+        {"valid_until": NOW - timedelta(seconds=1)},
+    ],
+)
+def test_expired_target_returns_to_normal(changes: dict[str, object]) -> None:
+    result = run(target(solax_w=1_000, **changes), capabilities=verified(solax_discharge=True))
+
+    assert (result.state, result.reason) == (DecisionState.RETURN_TO_NORMAL, DecisionReason.TARGET_NOT_CURRENT)
+
+
+def test_future_dated_target_returns_to_normal() -> None:
+    result = run(
+        target(timestamp=NOW + timedelta(seconds=1), valid_until=NOW + timedelta(minutes=15)),
+    )
+
+    assert result.reason is DecisionReason.TARGET_NOT_CURRENT
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_target_returns_to_normal(value: float) -> None:
+    result = run(target(solax_w=value))
+
+    assert result.reason is DecisionReason.TARGET_POWER_INVALID
+
+
+@pytest.mark.parametrize("field", ["solax_target_w", "deye_target_w"])
+def test_boolean_target_power_returns_to_normal(field: str) -> None:
+    result = run(replace(target(), **{field: True}))
+
+    assert result.reason is DecisionReason.TARGET_POWER_INVALID
+
+
+def test_timezone_naive_target_or_now_returns_to_normal() -> None:
+    naive = NOW.replace(tzinfo=None)
+
+    assert run(target(timestamp=naive)).reason is DecisionReason.TARGET_TIMESTAMP_INVALID
+    assert run(target(), now=naive).reason is DecisionReason.TARGET_TIMESTAMP_INVALID
+
+
+def test_target_above_configured_power_limit_returns_to_normal() -> None:
+    result = run(target(deye_w=12_001), capabilities=verified(deye_export=True))
+
+    assert result.reason is DecisionReason.TARGET_POWER_LIMIT
+
+
+def test_zero_deadband_normalizes_both_targets_to_idle() -> None:
+    result = run(target(solax_w=50, deye_w=-49), config=SafetyConfig(zero_deadband_w=50))
+
+    assert (result.state, result.reason, result.target_w) == (
+        DecisionState.IDLE,
+        DecisionReason.TARGET_ZERO,
+        None,
+    )
+
+
+def test_both_zero_is_idle() -> None:
+    assert run(target()).state is DecisionState.IDLE
+
+
+@pytest.mark.parametrize(
+    ("current", "caps", "expected_state", "expected_target"),
+    [
+        (target(solax_w=2_000), verified(solax_discharge=True), DecisionState.CONTROL_SOLAX, 2_000),
+        (target(solax_w=-2_000), verified(solax_charge=True), DecisionState.CONTROL_SOLAX, -2_000),
+        (target(deye_w=2_000), verified(deye_export=True), DecisionState.CONTROL_DEYE, 2_000),
+        (target(deye_w=-2_000), verified(deye_charge=True), DecisionState.CONTROL_DEYE, -2_000),
+    ],
+)
+def test_single_verified_owner_is_selected(
+    current: CurrentTarget,
+    caps: V3Capabilities,
+    expected_state: DecisionState,
+    expected_target: float,
+) -> None:
+    result = run(current, capabilities=caps)
+
+    assert (result.state, result.reason, result.target_w) == (
+        expected_state,
+        DecisionReason.CONTROL_ALLOWED,
+        expected_target,
+    )
+
+
+@pytest.mark.parametrize("solax_w,deye_w", [(1_000, -1_000), (-1_000, 1_000)])
+def test_opposite_directions_fail_closed(solax_w: float, deye_w: float) -> None:
+    result = run(target(solax_w=solax_w, deye_w=deye_w))
+
+    assert (result.state, result.reason) == (
+        DecisionState.RETURN_TO_NORMAL,
+        DecisionReason.CROSS_TRANSFER_RISK,
+    )
+
+
+@pytest.mark.parametrize("solax_w,deye_w", [(1_000, 1_000), (-1_000, -1_000)])
+def test_same_direction_multiple_owners_are_unsupported(solax_w: float, deye_w: float) -> None:
+    result = run(target(solax_w=solax_w, deye_w=deye_w))
+
+    assert result.reason is DecisionReason.MULTI_OWNER_UNSUPPORTED
+
+
+@pytest.mark.parametrize(
+    "current",
+    [target(solax_w=1_000), target(solax_w=-1_000), target(deye_w=1_000), target(deye_w=-1_000)],
+)
+def test_default_capabilities_do_not_allow_power_control(current: CurrentTarget) -> None:
+    result = run(current)
+
+    assert (result.state, result.reason) == (
+        DecisionState.RETURN_TO_NORMAL,
+        DecisionReason.CAPABILITY_UNSUPPORTED,
+    )
+
+
+def test_deye_bounded_export_also_requires_verified_export_mode_entry() -> None:
+    result = run(target(deye_w=1_000), capabilities=verified(deye_export=True, deye_enter_export=False))
+
+    assert result.reason is DecisionReason.CAPABILITY_UNSUPPORTED
+
+
+def test_stale_telemetry_returns_to_normal() -> None:
+    assert run(target(), safe(telemetry_fresh=False)).reason is DecisionReason.TELEMETRY_STALE
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "pcc_export_w",
+        "measured_solax_battery_power_w",
+        "measured_deye_battery_power_w",
+    ],
+)
+def test_missing_telemetry_returns_to_normal(field: str) -> None:
+    assert run(target(), replace(safe(), **{field: None})).reason is DecisionReason.TELEMETRY_MISSING
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "pcc_export_w",
+        "measured_solax_battery_power_w",
+        "measured_deye_battery_power_w",
+    ],
+)
+def test_boolean_numeric_telemetry_returns_to_normal(field: str) -> None:
+    assert run(target(), replace(safe(), **{field: True})).reason is DecisionReason.TELEMETRY_MISSING
+
+
+@pytest.mark.parametrize(
+    ("name", "soc", "expected_reason"),
+    [
+        ("solax", 10.0, DecisionReason.SOLAX_SOC_FLOOR),
+        ("solax", 12.0, DecisionReason.SOLAX_SOC_FLOOR),
+        ("solax", 15.0, DecisionReason.SOLAX_SOC_FLOOR),
+        ("deye", 10.0, DecisionReason.DEYE_SOC_FLOOR),
+        ("deye", 12.0, DecisionReason.DEYE_SOC_FLOOR),
+        ("deye", 15.0, DecisionReason.DEYE_SOC_FLOOR),
+    ],
+)
+def test_discharge_is_blocked_at_or_below_protected_soc_threshold(
+    name: str,
+    soc: float,
+    expected_reason: DecisionReason,
+) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    snapshot = safe(**{f"{name}_soc": soc})
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
+
+    assert run(current, snapshot, capabilities=caps).reason is expected_reason
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_discharge_is_allowed_immediately_above_protected_soc_threshold(name: str) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    snapshot = safe(**{f"{name}_soc": 15.0001})
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
+
+    expected = DecisionState.CONTROL_SOLAX if name == "solax" else DecisionState.CONTROL_DEYE
+    assert run(current, snapshot, capabilities=caps).state is expected
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_low_valid_soc_does_not_block_verified_charge(name: str) -> None:
+    current = target(solax_w=-1_000) if name == "solax" else target(deye_w=-1_000)
+    snapshot = safe(**{f"{name}_soc": 0.0})
+    caps = verified(solax_charge=True) if name == "solax" else verified(deye_charge=True)
+
+    expected = DecisionState.CONTROL_SOLAX if name == "solax" else DecisionState.CONTROL_DEYE
+    assert run(current, snapshot, capabilities=caps).state is expected
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+@pytest.mark.parametrize("soc", [-0.001, 100.001, float("nan"), float("inf"), float("-inf"), True])
+def test_invalid_active_soc_fails_closed(name: str, soc: object) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    snapshot = safe(**{f"{name}_soc": soc})
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
+
+    assert run(current, snapshot, capabilities=caps).reason is DecisionReason.TELEMETRY_MISSING
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_missing_inactive_soc_does_not_block_single_owner(name: str) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    inactive = "deye_soc" if name == "solax" else "solax_soc"
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
+
+    expected = DecisionState.CONTROL_SOLAX if name == "solax" else DecisionState.CONTROL_DEYE
+    assert run(current, safe(**{inactive: None}), capabilities=caps).state is expected
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_missing_active_soc_blocks_discharge(name: str) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
+
+    assert run(current, safe(**{f"{name}_soc": None}), capabilities=caps).reason is DecisionReason.TELEMETRY_MISSING
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_charge_does_not_require_soc(name: str) -> None:
+    current = target(solax_w=-1_000) if name == "solax" else target(deye_w=-1_000)
+    caps = verified(solax_charge=True) if name == "solax" else verified(deye_charge=True)
+
+    expected = DecisionState.CONTROL_SOLAX if name == "solax" else DecisionState.CONTROL_DEYE
+    assert run(current, safe(solax_soc=None, deye_soc=None), capabilities=caps).state is expected
+
+
+def test_projected_operational_export_limit_fails_closed() -> None:
+    result = run(target(deye_w=5_000), safe(pcc_export_w=4_801), capabilities=verified(deye_export=True))
+
+    assert result.reason is DecisionReason.EXPORT_TARGET_LIMIT
+
+
+def test_existing_measured_discharge_is_not_added_to_pcc_twice() -> None:
+    result = run(
+        target(deye_w=5_000),
+        safe(pcc_export_w=5_000, measured_deye_battery_power_w=-5_000),
+        capabilities=verified(deye_export=True),
+    )
+
+    assert result.state is DecisionState.CONTROL_DEYE
+
+
+@pytest.mark.parametrize(
+    ("measured_w", "target_w", "pcc_export_w"),
+    [
+        (0.0, 2_000.0, 1_000.0),
+        (-1_000.0, 2_000.0, 1_000.0),
+        (-2_000.0, 1_000.0, 1_000.0),
+        (0.0, 5_000.0, -3_000.0),
+        (0.0, 5_000.0, 2_000.0),
+    ],
+)
+def test_discharge_delta_allows_safe_neutral_discharge_and_pcc_states(
+    measured_w: float,
+    target_w: float,
+    pcc_export_w: float,
+) -> None:
+    result = run(
+        target(solax_w=target_w),
+        safe(pcc_export_w=pcc_export_w, measured_solax_battery_power_w=measured_w),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.state is DecisionState.CONTROL_SOLAX
+
+
+def test_existing_charge_is_included_in_discharge_export_delta() -> None:
+    result = run(
+        target(solax_w=7_000),
+        safe(pcc_export_w=0, measured_solax_battery_power_w=4_000),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_TARGET_LIMIT
+
+
+def test_charge_to_discharge_transition_crossing_operational_limit_is_blocked() -> None:
+    result = run(
+        target(solax_w=5_000),
+        safe(pcc_export_w=4_000, measured_solax_battery_power_w=1_000),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_TARGET_LIMIT
+
+
+def test_operational_export_limit_equality_is_allowed() -> None:
+    result = run(
+        target(solax_w=5_000),
+        safe(pcc_export_w=4_800, export_authorization=authorization(max_export_w=10_000)),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.state is DecisionState.CONTROL_SOLAX
+
+
+def test_missing_export_authorization_blocks_discharge() -> None:
+    result = run(
+        target(solax_w=1_000),
+        safe(export_authorization=None),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_MISSING
+
+
+def test_expired_export_authorization_blocks_discharge() -> None:
+    expired = authorization(valid_until=NOW)
+    result = run(
+        target(solax_w=1_000),
+        safe(export_authorization=expired),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_NOT_CURRENT
+
+
+def test_future_export_authorization_blocks_discharge() -> None:
+    future = authorization(
+        timestamp=NOW + timedelta(seconds=1),
+        valid_until=NOW + timedelta(minutes=1),
+    )
+    result = run(
+        target(solax_w=1_000),
+        safe(export_authorization=future),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_NOT_CURRENT
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        authorization(timestamp=NOW.replace(tzinfo=None)),
+        authorization(valid_until=NOW - timedelta(minutes=5)),
+        authorization(max_export_w=-1),
+        authorization(max_export_w=float("nan")),
+        authorization(max_export_w=float("inf")),
+        authorization(max_export_w=float("-inf")),
+        authorization(max_export_w=True),
+    ],
+)
+def test_invalid_export_authorization_blocks_discharge(invalid: ExportAuthorization) -> None:
+    result = run(
+        target(solax_w=1_000),
+        safe(export_authorization=invalid),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_INVALID
+
+
+def test_authorization_below_operational_ceiling_is_enforced() -> None:
+    result = run(
+        target(solax_w=4_001),
+        safe(pcc_export_w=2_000, export_authorization=authorization(max_export_w=6_000)),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_LIMIT
+
+
+def test_authorization_above_operational_ceiling_does_not_raise_effective_ceiling() -> None:
+    result = run(
+        target(solax_w=5_001),
+        safe(pcc_export_w=4_800, export_authorization=authorization(max_export_w=12_000)),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_TARGET_LIMIT
+
+
+def test_projected_export_exactly_at_authorized_ceiling_is_allowed() -> None:
+    result = run(
+        target(solax_w=4_000),
+        safe(pcc_export_w=1_000, export_authorization=authorization(max_export_w=5_000)),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.state is DecisionState.CONTROL_SOLAX
+
+
+def test_projected_export_above_authorized_ceiling_is_blocked() -> None:
+    result = run(
+        target(solax_w=4_001),
+        safe(pcc_export_w=1_000, export_authorization=authorization(max_export_w=5_000)),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_LIMIT
+
+
+def test_zero_incremental_discharge_still_requires_sufficient_authorization() -> None:
+    result = run(
+        target(solax_w=5_000),
+        safe(
+            pcc_export_w=9_000,
+            measured_solax_battery_power_w=-5_000,
+            export_authorization=authorization(max_export_w=8_000),
+        ),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_LIMIT
+
+
+def test_reduced_authorization_is_applied_on_the_next_evaluation() -> None:
+    current = target(solax_w=5_000)
+    caps = verified(solax_discharge=True)
+
+    allowed = run(current, safe(export_authorization=authorization(max_export_w=6_000)), capabilities=caps)
+    blocked = run(current, safe(export_authorization=authorization(max_export_w=4_000)), capabilities=caps)
+
+    assert allowed.state is DecisionState.CONTROL_SOLAX
+    assert blocked.reason is DecisionReason.EXPORT_AUTHORIZATION_LIMIT
+
+
+def test_charge_does_not_require_export_authorization() -> None:
+    result = run(
+        target(solax_w=-1_000),
+        safe(export_authorization=None),
+        capabilities=verified(solax_charge=True),
+    )
+
+    assert result.state is DecisionState.CONTROL_SOLAX
+
+
+@pytest.mark.parametrize("field", ["solax_available", "deye_available"])
+def test_unavailable_inverter_fails_closed(field: str) -> None:
+    assert run(target(), replace(safe(), **{field: False})).reason is DecisionReason.INVERTER_UNAVAILABLE
+
+
+@pytest.mark.parametrize("field", ["solax_fault", "deye_fault"])
+def test_inverter_fault_fails_closed(field: str) -> None:
+    assert run(target(), replace(safe(), **{field: True})).reason is DecisionReason.INVERTER_FAULT
+
+
+def test_writer_conflict_fails_closed() -> None:
+    assert run(target(), safe(writer_conflict=True)).reason is DecisionReason.WRITER_CONFLICT
+
+
+@pytest.mark.parametrize(
+    ("solax_w", "deye_w"),
+    [(301, -301), (-301, 301)],
+)
+def test_measured_cross_transfer_fails_closed(solax_w: float, deye_w: float) -> None:
+    result = run(
+        target(),
+        safe(measured_solax_battery_power_w=solax_w, measured_deye_battery_power_w=deye_w),
+    )
+
+    assert result.reason is DecisionReason.CROSS_TRANSFER_RISK
+
+
+def test_cross_transfer_tolerance_boundary_is_not_a_violation() -> None:
+    result = run(
+        target(),
+        safe(measured_solax_battery_power_w=300, measured_deye_battery_power_w=-300),
+    )
+
+    assert result.state is DecisionState.IDLE
+
+
+def test_late_entry_keeps_the_same_power_target_without_catch_up() -> None:
+    current = target(solax_w=2_000)
+    caps = verified(solax_discharge=True)
+
+    early = run(current, now=NOW - timedelta(minutes=4), capabilities=caps)
+    late = run(current, now=NOW + timedelta(minutes=9, seconds=59), capabilities=caps)
+
+    assert early == late
+    assert late.target_w == 2_000
+
+
+def test_restart_is_stateless_and_deterministic() -> None:
+    current = target(deye_w=2_000)
+    snapshot = safe()
+    caps = verified(deye_export=True)
+
+    assert run(current, snapshot, capabilities=caps) == run(current, snapshot, capabilities=caps)
+
+
+def test_domain_models_contain_no_energy_accounting_fields() -> None:
+    names = {field.name for model in (CurrentTarget, SafetySnapshot) for field in fields(model)}
+
+    assert not any("energy" in name or "delivered" in name or "budget" in name for name in names)
+
+
+def test_capability_defaults_match_verified_physical_knowledge() -> None:
+    capabilities = V3Capabilities()
+
+    assert capabilities.solax.normal is CapabilityLevel.VERIFIED
+    assert capabilities.solax.hold is CapabilityLevel.VERIFIED
+    assert capabilities.solax.set_power_discharge is CapabilityLevel.UNSUPPORTED
+    assert capabilities.solax.set_power_charge is CapabilityLevel.UNSUPPORTED
+    assert capabilities.deye.normal is CapabilityLevel.VERIFIED
+    assert capabilities.deye.enter_export is CapabilityLevel.VERIFIED
+    assert capabilities.deye.export_power is CapabilityLevel.UNSUPPORTED
+    assert capabilities.deye.charge_power is CapabilityLevel.UNSUPPORTED
+    assert capabilities.deye.hold is CapabilityLevel.UNSUPPORTED
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "zero_deadband_w",
+        "solax_max_abs_power_w",
+        "deye_max_abs_power_w",
+        "protected_soc_floor_pct",
+        "discharge_guard_margin_pct",
+        "operational_export_target_w",
+        "cross_transfer_tolerance_w",
+    ],
+)
+def test_boolean_safety_configuration_is_rejected(field: str) -> None:
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        SafetyConfig(**{field: True})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("margin", [-0.1, float("nan"), float("inf"), float("-inf")])
+def test_invalid_discharge_guard_margin_is_rejected(margin: float) -> None:
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        SafetyConfig(discharge_guard_margin_pct=margin)
+
+
+def test_soc_floor_plus_guard_margin_must_not_exceed_one_hundred() -> None:
+    with pytest.raises(ValueError, match="must not exceed 100"):
+        SafetyConfig(protected_soc_floor_pct=90, discharge_guard_margin_pct=10.001)
