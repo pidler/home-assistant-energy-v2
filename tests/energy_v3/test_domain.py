@@ -11,6 +11,7 @@ from apps.energy_v3 import (
     DecisionReason,
     DecisionState,
     DeyeCapabilities,
+    ExportAuthorization,
     SafetyConfig,
     SafetySnapshot,
     SolaxCapabilities,
@@ -32,13 +33,23 @@ def target(*, solax_w: float = 0.0, deye_w: float = 0.0, **changes: object) -> C
     return CurrentTarget(**values)  # type: ignore[arg-type]
 
 
+def authorization(*, max_export_w: float = 9_800.0, **changes: object) -> ExportAuthorization:
+    values: dict[str, object] = {
+        "timestamp": NOW - timedelta(minutes=5),
+        "valid_until": NOW + timedelta(minutes=10),
+        "max_pcc_export_w": max_export_w,
+    }
+    values.update(changes)
+    return ExportAuthorization(**values)  # type: ignore[arg-type]
+
+
 def safe(**changes: object) -> SafetySnapshot:
     values: dict[str, object] = {
         "telemetry_fresh": True,
         "solax_soc": 60.0,
         "deye_soc": 60.0,
         "pcc_export_w": 0.0,
-        "rolling_export_w": 0.0,
+        "export_authorization": authorization(),
         "solax_available": True,
         "deye_available": True,
         "solax_fault": False,
@@ -223,7 +234,6 @@ def test_stale_telemetry_returns_to_normal() -> None:
     "field",
     [
         "pcc_export_w",
-        "rolling_export_w",
         "measured_solax_battery_power_w",
         "measured_deye_battery_power_w",
     ],
@@ -236,7 +246,6 @@ def test_missing_telemetry_returns_to_normal(field: str) -> None:
     "field",
     [
         "pcc_export_w",
-        "rolling_export_w",
         "measured_solax_battery_power_w",
         "measured_deye_battery_power_w",
     ],
@@ -331,20 +340,10 @@ def test_projected_operational_export_limit_fails_closed() -> None:
     assert result.reason is DecisionReason.EXPORT_TARGET_LIMIT
 
 
-def test_projected_rolling_export_limit_fails_closed() -> None:
-    result = run(
-        target(deye_w=4_100),
-        safe(pcc_export_w=0, rolling_export_w=5_901),
-        capabilities=verified(deye_export=True),
-    )
-
-    assert result.reason is DecisionReason.ROLLING_EXPORT_LIMIT
-
-
 def test_existing_measured_discharge_is_not_added_to_pcc_twice() -> None:
     result = run(
         target(deye_w=5_000),
-        safe(pcc_export_w=5_000, rolling_export_w=5_000, measured_deye_battery_power_w=-5_000),
+        safe(pcc_export_w=5_000, measured_deye_battery_power_w=-5_000),
         capabilities=verified(deye_export=True),
     )
 
@@ -395,25 +394,143 @@ def test_charge_to_discharge_transition_crossing_operational_limit_is_blocked() 
     assert result.reason is DecisionReason.EXPORT_TARGET_LIMIT
 
 
-def test_charge_to_discharge_transition_crossing_rolling_limit_is_blocked() -> None:
+def test_operational_export_limit_equality_is_allowed() -> None:
     result = run(
-        target(solax_w=4_001),
-        safe(pcc_export_w=0, rolling_export_w=5_000, measured_solax_battery_power_w=1_000),
+        target(solax_w=5_000),
+        safe(pcc_export_w=4_800, export_authorization=authorization(max_export_w=10_000)),
         capabilities=verified(solax_discharge=True),
     )
 
-    assert result.reason is DecisionReason.ROLLING_EXPORT_LIMIT
+    assert result.state is DecisionState.CONTROL_SOLAX
+
+
+def test_missing_export_authorization_blocks_discharge() -> None:
+    result = run(
+        target(solax_w=1_000),
+        safe(export_authorization=None),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_MISSING
+
+
+def test_expired_export_authorization_blocks_discharge() -> None:
+    expired = authorization(valid_until=NOW)
+    result = run(
+        target(solax_w=1_000),
+        safe(export_authorization=expired),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_NOT_CURRENT
+
+
+def test_future_export_authorization_blocks_discharge() -> None:
+    future = authorization(
+        timestamp=NOW + timedelta(seconds=1),
+        valid_until=NOW + timedelta(minutes=1),
+    )
+    result = run(
+        target(solax_w=1_000),
+        safe(export_authorization=future),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_NOT_CURRENT
 
 
 @pytest.mark.parametrize(
-    ("pcc_export_w", "rolling_export_w", "target_w"),
-    [(4_800.0, 0.0, 5_000.0), (0.0, 5_000.0, 5_000.0)],
+    "invalid",
+    [
+        authorization(timestamp=NOW.replace(tzinfo=None)),
+        authorization(valid_until=NOW - timedelta(minutes=5)),
+        authorization(max_export_w=-1),
+        authorization(max_export_w=float("nan")),
+        authorization(max_export_w=float("inf")),
+        authorization(max_export_w=float("-inf")),
+        authorization(max_export_w=True),
+    ],
 )
-def test_export_limit_equality_is_allowed(pcc_export_w: float, rolling_export_w: float, target_w: float) -> None:
+def test_invalid_export_authorization_blocks_discharge(invalid: ExportAuthorization) -> None:
     result = run(
-        target(solax_w=target_w),
-        safe(pcc_export_w=pcc_export_w, rolling_export_w=rolling_export_w),
+        target(solax_w=1_000),
+        safe(export_authorization=invalid),
         capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_INVALID
+
+
+def test_authorization_below_operational_ceiling_is_enforced() -> None:
+    result = run(
+        target(solax_w=4_001),
+        safe(pcc_export_w=2_000, export_authorization=authorization(max_export_w=6_000)),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_LIMIT
+
+
+def test_authorization_above_operational_ceiling_does_not_raise_effective_ceiling() -> None:
+    result = run(
+        target(solax_w=5_001),
+        safe(pcc_export_w=4_800, export_authorization=authorization(max_export_w=12_000)),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_TARGET_LIMIT
+
+
+def test_projected_export_exactly_at_authorized_ceiling_is_allowed() -> None:
+    result = run(
+        target(solax_w=4_000),
+        safe(pcc_export_w=1_000, export_authorization=authorization(max_export_w=5_000)),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.state is DecisionState.CONTROL_SOLAX
+
+
+def test_projected_export_above_authorized_ceiling_is_blocked() -> None:
+    result = run(
+        target(solax_w=4_001),
+        safe(pcc_export_w=1_000, export_authorization=authorization(max_export_w=5_000)),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_LIMIT
+
+
+def test_zero_incremental_discharge_still_requires_sufficient_authorization() -> None:
+    result = run(
+        target(solax_w=5_000),
+        safe(
+            pcc_export_w=9_000,
+            measured_solax_battery_power_w=-5_000,
+            export_authorization=authorization(max_export_w=8_000),
+        ),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_AUTHORIZATION_LIMIT
+
+
+def test_reduced_authorization_is_applied_on_the_next_evaluation() -> None:
+    current = target(solax_w=5_000)
+    caps = verified(solax_discharge=True)
+
+    allowed = run(current, safe(export_authorization=authorization(max_export_w=6_000)), capabilities=caps)
+    blocked = run(current, safe(export_authorization=authorization(max_export_w=4_000)), capabilities=caps)
+
+    assert allowed.state is DecisionState.CONTROL_SOLAX
+    assert blocked.reason is DecisionReason.EXPORT_AUTHORIZATION_LIMIT
+
+
+def test_charge_does_not_require_export_authorization() -> None:
+    result = run(
+        target(solax_w=-1_000),
+        safe(export_authorization=None),
+        capabilities=verified(solax_charge=True),
     )
 
     assert result.state is DecisionState.CONTROL_SOLAX
@@ -503,7 +620,6 @@ def test_capability_defaults_match_verified_physical_knowledge() -> None:
         "protected_soc_floor_pct",
         "discharge_guard_margin_pct",
         "operational_export_target_w",
-        "contractual_rolling_limit_w",
         "cross_transfer_tolerance_w",
     ],
 )

@@ -40,7 +40,10 @@ class DecisionReason(StrEnum):
     SOLAX_SOC_FLOOR = "SOLAX_SOC_FLOOR"
     DEYE_SOC_FLOOR = "DEYE_SOC_FLOOR"
     EXPORT_TARGET_LIMIT = "EXPORT_TARGET_LIMIT"
-    ROLLING_EXPORT_LIMIT = "ROLLING_EXPORT_LIMIT"
+    EXPORT_AUTHORIZATION_MISSING = "EXPORT_AUTHORIZATION_MISSING"
+    EXPORT_AUTHORIZATION_INVALID = "EXPORT_AUTHORIZATION_INVALID"
+    EXPORT_AUTHORIZATION_NOT_CURRENT = "EXPORT_AUTHORIZATION_NOT_CURRENT"
+    EXPORT_AUTHORIZATION_LIMIT = "EXPORT_AUTHORIZATION_LIMIT"
     CROSS_TRANSFER_RISK = "CROSS_TRANSFER_RISK"
     MULTI_OWNER_UNSUPPORTED = "MULTI_OWNER_UNSUPPORTED"
     CAPABILITY_UNSUPPORTED = "CAPABILITY_UNSUPPORTED"
@@ -58,6 +61,15 @@ class CurrentTarget:
 
 
 @dataclass(frozen=True)
+class ExportAuthorization:
+    """Time-limited PCC export ceiling from the authoritative export limiter."""
+
+    timestamp: datetime
+    valid_until: datetime
+    max_pcc_export_w: float
+
+
+@dataclass(frozen=True)
 class SafetySnapshot:
     """Minimum evidence required for deterministic V3 arbitration.
 
@@ -69,7 +81,7 @@ class SafetySnapshot:
     solax_soc: float | None
     deye_soc: float | None
     pcc_export_w: float | None
-    rolling_export_w: float | None
+    export_authorization: ExportAuthorization | None
     solax_available: bool
     deye_available: bool
     solax_fault: bool
@@ -87,7 +99,6 @@ class SafetyConfig:
     protected_soc_floor_pct: float = 10.0
     discharge_guard_margin_pct: float = 5.0
     operational_export_target_w: float = 9_800.0
-    contractual_rolling_limit_w: float = 10_000.0
     cross_transfer_tolerance_w: float = 300.0
 
     def __post_init__(self) -> None:
@@ -98,7 +109,6 @@ class SafetyConfig:
             self.protected_soc_floor_pct,
             self.discharge_guard_margin_pct,
             self.operational_export_target_w,
-            self.contractual_rolling_limit_w,
             self.cross_transfer_tolerance_w,
         )
         if not all(_is_finite_number(value) and value >= 0 for value in values):
@@ -109,8 +119,6 @@ class SafetyConfig:
             raise ValueError("protected SOC floor must be between 0 and 100")
         if self.protected_soc_floor_pct + self.discharge_guard_margin_pct > 100:
             raise ValueError("protected SOC floor plus discharge guard margin must not exceed 100")
-        if self.operational_export_target_w > self.contractual_rolling_limit_w:
-            raise ValueError("operational export target must not exceed the contractual limit")
 
 
 @dataclass(frozen=True)

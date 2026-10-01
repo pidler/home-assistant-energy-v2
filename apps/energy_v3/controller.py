@@ -11,6 +11,7 @@ from .models import (
     Decision,
     DecisionReason,
     DecisionState,
+    ExportAuthorization,
     SafetyConfig,
     SafetySnapshot,
     V3Capabilities,
@@ -35,7 +36,7 @@ def decide(
         return _normal(failure)
     assert normalized is not None
 
-    safety_failure = _evaluate_safety(normalized, safety, config)
+    safety_failure = _evaluate_safety(normalized, safety, now, config)
     if safety_failure is not None:
         return _normal(safety_failure)
 
@@ -95,13 +96,13 @@ def _validate_target(
 def _evaluate_safety(
     target: CurrentTarget,
     safety: SafetySnapshot,
+    now: datetime,
     config: SafetyConfig,
 ) -> DecisionReason | None:
     if not safety.telemetry_fresh:
         return DecisionReason.TELEMETRY_STALE
     required_numeric = (
         safety.pcc_export_w,
-        safety.rolling_export_w,
         safety.measured_solax_battery_power_w,
         safety.measured_deye_battery_power_w,
     )
@@ -126,7 +127,7 @@ def _evaluate_safety(
         if safety.deye_soc <= protected_soc_threshold:
             return DecisionReason.DEYE_SOC_FLOOR
 
-    assert safety.pcc_export_w is not None and safety.rolling_export_w is not None
+    assert safety.pcc_export_w is not None
     assert safety.measured_solax_battery_power_w is not None
     assert safety.measured_deye_battery_power_w is not None
     solax_w = safety.measured_solax_battery_power_w
@@ -138,10 +139,16 @@ def _evaluate_safety(
         target.deye_target_w,
         deye_w,
     )
-    if max(safety.pcc_export_w, 0.0) + additional_discharge_w > config.operational_export_target_w:
+    projected_pcc_export_w = max(safety.pcc_export_w, 0.0) + additional_discharge_w
+    if projected_pcc_export_w > config.operational_export_target_w:
         return DecisionReason.EXPORT_TARGET_LIMIT
-    if max(safety.rolling_export_w, 0.0) + additional_discharge_w > config.contractual_rolling_limit_w:
-        return DecisionReason.ROLLING_EXPORT_LIMIT
+    if target.solax_target_w > 0 or target.deye_target_w > 0:
+        authorization_failure = _validate_export_authorization(safety.export_authorization, now)
+        if authorization_failure is not None:
+            return authorization_failure
+        assert safety.export_authorization is not None
+        if projected_pcc_export_w > safety.export_authorization.max_pcc_export_w:
+            return DecisionReason.EXPORT_AUTHORIZATION_LIMIT
 
     tolerance = config.cross_transfer_tolerance_w
     cross_transfer = (solax_w > tolerance and deye_w < -tolerance) or (deye_w > tolerance and solax_w < -tolerance)
@@ -160,6 +167,24 @@ def _additional_discharge(target_w: float, measured_battery_power_w: float) -> f
 
 def _is_valid_soc(value: object) -> bool:
     return _is_finite_number(value) and 0 <= value <= 100
+
+
+def _validate_export_authorization(
+    authorization: ExportAuthorization | None,
+    now: datetime,
+) -> DecisionReason | None:
+    if authorization is None:
+        return DecisionReason.EXPORT_AUTHORIZATION_MISSING
+    timestamps = (authorization.timestamp, authorization.valid_until)
+    if any(value.tzinfo is None or value.utcoffset() is None for value in timestamps):
+        return DecisionReason.EXPORT_AUTHORIZATION_INVALID
+    if authorization.valid_until <= authorization.timestamp:
+        return DecisionReason.EXPORT_AUTHORIZATION_INVALID
+    if not _is_finite_number(authorization.max_pcc_export_w) or authorization.max_pcc_export_w < 0:
+        return DecisionReason.EXPORT_AUTHORIZATION_INVALID
+    if not authorization.timestamp <= now < authorization.valid_until:
+        return DecisionReason.EXPORT_AUTHORIZATION_NOT_CURRENT
+    return None
 
 
 def _normal(reason: DecisionReason) -> Decision:

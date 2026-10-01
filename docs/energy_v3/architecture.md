@@ -42,7 +42,7 @@ attempting to catch up after a late start.
 
 The pure decision requires fresh, finite telemetry; both inverters available and
 fault-free; no writer conflict; SOC above the protected discharge threshold;
-projected export within the 9.8 kW operational target and 10 kW rolling limit;
+projected export within the 9.8 kW operational target and a valid export authorization;
 and no measured battery-to-battery transfer. Normalized measured battery power is
 positive for charge and negative for discharge.
 
@@ -55,6 +55,30 @@ Export projection remains intentionally instantaneous. For a positive discharge
 target, V3 adds the requested discharge to the current normalized battery power.
 This accounts for both removing existing charging load and changing existing
 discharge, without introducing a full power-flow model.
+
+## Export authorization
+
+V3 does not calculate or predict the contractual rolling 15-minute average. A
+separate authoritative export limiter owns PCC history, the 10 kW contractual
+protection and the permitted export calculation. It supplies an immutable
+`ExportAuthorization` containing:
+
+- a timezone-aware evidence `timestamp`;
+- an exclusive timezone-aware `valid_until` boundary;
+- the current `max_pcc_export_w` ceiling.
+
+Active discharge requires a present, structurally valid and current authorization.
+The effective ceiling is the lower of the authorization and V3's independent
+9.8 kW operational limit. The controller compares the complete projected PCC
+export against that ceiling even when incremental discharge is zero. Missing,
+future-dated, expired, nonfinite, negative or boolean authorization evidence fails
+closed. Charging does not require export authorization.
+
+Authorization must be refreshed continuously by a future runtime. Pre-command
+validation cannot guarantee ongoing compliance after the authorization expires or
+is reduced. If the existing ENERGY V2 limiter cannot provide this contract, the V3
+runtime will need a dedicated limiter adapter; this foundation assumes no existing
+Home Assistant entity or API.
 
 All invalid, stale, unsafe, conflicting, or unsupported requests return
 `RETURN_TO_NORMAL`. V3.0 contains no code that performs that future physical
