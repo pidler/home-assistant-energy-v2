@@ -8,6 +8,12 @@ from enum import StrEnum
 from math import isfinite
 
 
+def _is_finite_number(value: object) -> bool:
+    """Return whether value is a finite real number, excluding booleans."""
+
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value)
+
+
 class CapabilityLevel(StrEnum):
     VERIFIED = "VERIFIED"
     UNSUPPORTED = "UNSUPPORTED"
@@ -79,6 +85,7 @@ class SafetyConfig:
     solax_max_abs_power_w: float = 12_000.0
     deye_max_abs_power_w: float = 12_000.0
     protected_soc_floor_pct: float = 10.0
+    discharge_guard_margin_pct: float = 5.0
     operational_export_target_w: float = 9_800.0
     contractual_rolling_limit_w: float = 10_000.0
     cross_transfer_tolerance_w: float = 300.0
@@ -89,16 +96,19 @@ class SafetyConfig:
             self.solax_max_abs_power_w,
             self.deye_max_abs_power_w,
             self.protected_soc_floor_pct,
+            self.discharge_guard_margin_pct,
             self.operational_export_target_w,
             self.contractual_rolling_limit_w,
             self.cross_transfer_tolerance_w,
         )
-        if not all(isfinite(value) and value >= 0 for value in values):
+        if not all(_is_finite_number(value) and value >= 0 for value in values):
             raise ValueError("safety configuration values must be finite and nonnegative")
         if self.solax_max_abs_power_w <= 0 or self.deye_max_abs_power_w <= 0:
             raise ValueError("inverter power limits must be positive")
         if not 0 <= self.protected_soc_floor_pct <= 100:
             raise ValueError("protected SOC floor must be between 0 and 100")
+        if self.protected_soc_floor_pct + self.discharge_guard_margin_pct > 100:
+            raise ValueError("protected SOC floor plus discharge guard margin must not exceed 100")
         if self.operational_export_target_w > self.contractual_rolling_limit_w:
             raise ValueError("operational export target must not exceed the contractual limit")
 
@@ -134,7 +144,7 @@ class Decision:
 
     def __post_init__(self) -> None:
         if self.state in {DecisionState.CONTROL_SOLAX, DecisionState.CONTROL_DEYE}:
-            if self.target_w is None or not isfinite(self.target_w) or self.target_w == 0:
+            if self.target_w is None or not _is_finite_number(self.target_w) or self.target_w == 0:
                 raise ValueError("control decisions require a finite nonzero target")
         elif self.target_w is not None:
             raise ValueError("non-control decisions cannot carry a target")

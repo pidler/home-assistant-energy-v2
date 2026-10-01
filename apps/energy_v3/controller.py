@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
-from math import isfinite
 
 from .models import (
     CapabilityLevel,
@@ -15,6 +14,7 @@ from .models import (
     SafetyConfig,
     SafetySnapshot,
     V3Capabilities,
+    _is_finite_number,
 )
 
 
@@ -75,7 +75,7 @@ def _validate_target(
         return None, DecisionReason.TARGET_TIMESTAMP_INVALID
     if target.valid_until <= target.timestamp or not target.timestamp <= now < target.valid_until:
         return None, DecisionReason.TARGET_NOT_CURRENT
-    if not all(isfinite(value) for value in (target.solax_target_w, target.deye_target_w)):
+    if not all(_is_finite_number(value) for value in (target.solax_target_w, target.deye_target_w)):
         return None, DecisionReason.TARGET_POWER_INVALID
     if (
         abs(target.solax_target_w) > config.solax_max_abs_power_w
@@ -99,15 +99,13 @@ def _evaluate_safety(
 ) -> DecisionReason | None:
     if not safety.telemetry_fresh:
         return DecisionReason.TELEMETRY_STALE
-    numeric = (
-        safety.solax_soc,
-        safety.deye_soc,
+    required_numeric = (
         safety.pcc_export_w,
         safety.rolling_export_w,
         safety.measured_solax_battery_power_w,
         safety.measured_deye_battery_power_w,
     )
-    if any(value is None or not isfinite(value) for value in numeric):
+    if any(value is None or not _is_finite_number(value) for value in required_numeric):
         return DecisionReason.TELEMETRY_MISSING
     if safety.writer_conflict:
         return DecisionReason.WRITER_CONFLICT
@@ -116,11 +114,17 @@ def _evaluate_safety(
     if safety.solax_fault or safety.deye_fault:
         return DecisionReason.INVERTER_FAULT
 
-    assert safety.solax_soc is not None and safety.deye_soc is not None
-    if target.solax_target_w > 0 and safety.solax_soc <= config.protected_soc_floor_pct:
-        return DecisionReason.SOLAX_SOC_FLOOR
-    if target.deye_target_w > 0 and safety.deye_soc <= config.protected_soc_floor_pct:
-        return DecisionReason.DEYE_SOC_FLOOR
+    protected_soc_threshold = config.protected_soc_floor_pct + config.discharge_guard_margin_pct
+    if target.solax_target_w > 0:
+        if not _is_valid_soc(safety.solax_soc):
+            return DecisionReason.TELEMETRY_MISSING
+        if safety.solax_soc <= protected_soc_threshold:
+            return DecisionReason.SOLAX_SOC_FLOOR
+    if target.deye_target_w > 0:
+        if not _is_valid_soc(safety.deye_soc):
+            return DecisionReason.TELEMETRY_MISSING
+        if safety.deye_soc <= protected_soc_threshold:
+            return DecisionReason.DEYE_SOC_FLOOR
 
     assert safety.pcc_export_w is not None and safety.rolling_export_w is not None
     assert safety.measured_solax_battery_power_w is not None
@@ -130,9 +134,9 @@ def _evaluate_safety(
 
     # Current PCC already contains measured battery flow. Project only the
     # additional discharge needed to reach the requested absolute power target.
-    additional_discharge_w = max(target.solax_target_w - max(-solax_w, 0.0), 0.0) + max(
-        target.deye_target_w - max(-deye_w, 0.0),
-        0.0,
+    additional_discharge_w = _additional_discharge(target.solax_target_w, solax_w) + _additional_discharge(
+        target.deye_target_w,
+        deye_w,
     )
     if max(safety.pcc_export_w, 0.0) + additional_discharge_w > config.operational_export_target_w:
         return DecisionReason.EXPORT_TARGET_LIMIT
@@ -146,6 +150,16 @@ def _evaluate_safety(
 
 def _deadband(value: float, deadband_w: float) -> float:
     return 0.0 if abs(value) <= deadband_w else value
+
+
+def _additional_discharge(target_w: float, measured_battery_power_w: float) -> float:
+    """Estimate added grid contribution for a positive discharge target."""
+
+    return max(target_w + measured_battery_power_w, 0.0) if target_w > 0 else 0.0
+
+
+def _is_valid_soc(value: object) -> bool:
+    return _is_finite_number(value) and 0 <= value <= 100
 
 
 def _normal(reason: DecisionReason) -> Decision:

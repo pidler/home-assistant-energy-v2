@@ -41,10 +41,20 @@ attempting to catch up after a late start.
 ## Safety
 
 The pure decision requires fresh, finite telemetry; both inverters available and
-fault-free; no writer conflict; SOC above the protected floor for discharge;
+fault-free; no writer conflict; SOC above the protected discharge threshold;
 projected export within the 9.8 kW operational target and 10 kW rolling limit;
 and no measured battery-to-battery transfer. Normalized measured battery power is
 positive for charge and negative for discharge.
+
+The protected discharge threshold is the 10% physical floor plus a conservative
+5 percentage-point guard margin by default. Discharge is blocked at or below the
+resulting 15% threshold. The margin is configurable, finite and nonnegative;
+charging does not require SOC evidence for discharge-floor protection.
+
+Export projection remains intentionally instantaneous. For a positive discharge
+target, V3 adds the requested discharge to the current normalized battery power.
+This accounts for both removing existing charging load and changing existing
+discharge, without introducing a full power-flow model.
 
 All invalid, stale, unsafe, conflicting, or unsupported requests return
 `RETURN_TO_NORMAL`. V3.0 contains no code that performs that future physical

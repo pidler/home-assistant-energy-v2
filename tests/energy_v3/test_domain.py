@@ -121,6 +121,13 @@ def test_nonfinite_target_returns_to_normal(value: float) -> None:
     assert result.reason is DecisionReason.TARGET_POWER_INVALID
 
 
+@pytest.mark.parametrize("field", ["solax_target_w", "deye_target_w"])
+def test_boolean_target_power_returns_to_normal(field: str) -> None:
+    result = run(replace(target(), **{field: True}))
+
+    assert result.reason is DecisionReason.TARGET_POWER_INVALID
+
+
 def test_timezone_naive_target_or_now_returns_to_normal() -> None:
     naive = NOW.replace(tzinfo=None)
 
@@ -215,8 +222,6 @@ def test_stale_telemetry_returns_to_normal() -> None:
 @pytest.mark.parametrize(
     "field",
     [
-        "solax_soc",
-        "deye_soc",
         "pcc_export_w",
         "rolling_export_w",
         "measured_solax_battery_power_w",
@@ -227,26 +232,97 @@ def test_missing_telemetry_returns_to_normal(field: str) -> None:
     assert run(target(), replace(safe(), **{field: None})).reason is DecisionReason.TELEMETRY_MISSING
 
 
-def test_solax_soc_at_floor_blocks_discharge() -> None:
-    result = run(
-        target(solax_w=1_000),
-        safe(solax_soc=10),
-        capabilities=verified(solax_discharge=True),
-    )
-
-    assert result.reason is DecisionReason.SOLAX_SOC_FLOOR
-
-
-def test_deye_soc_at_floor_blocks_discharge() -> None:
-    result = run(target(deye_w=1_000), safe(deye_soc=10), capabilities=verified(deye_export=True))
-
-    assert result.reason is DecisionReason.DEYE_SOC_FLOOR
+@pytest.mark.parametrize(
+    "field",
+    [
+        "pcc_export_w",
+        "rolling_export_w",
+        "measured_solax_battery_power_w",
+        "measured_deye_battery_power_w",
+    ],
+)
+def test_boolean_numeric_telemetry_returns_to_normal(field: str) -> None:
+    assert run(target(), replace(safe(), **{field: True})).reason is DecisionReason.TELEMETRY_MISSING
 
 
-def test_soc_floor_does_not_block_verified_charge() -> None:
-    result = run(target(deye_w=-1_000), safe(deye_soc=5), capabilities=verified(deye_charge=True))
+@pytest.mark.parametrize(
+    ("name", "soc", "expected_reason"),
+    [
+        ("solax", 10.0, DecisionReason.SOLAX_SOC_FLOOR),
+        ("solax", 12.0, DecisionReason.SOLAX_SOC_FLOOR),
+        ("solax", 15.0, DecisionReason.SOLAX_SOC_FLOOR),
+        ("deye", 10.0, DecisionReason.DEYE_SOC_FLOOR),
+        ("deye", 12.0, DecisionReason.DEYE_SOC_FLOOR),
+        ("deye", 15.0, DecisionReason.DEYE_SOC_FLOOR),
+    ],
+)
+def test_discharge_is_blocked_at_or_below_protected_soc_threshold(
+    name: str,
+    soc: float,
+    expected_reason: DecisionReason,
+) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    snapshot = safe(**{f"{name}_soc": soc})
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
 
-    assert result.state is DecisionState.CONTROL_DEYE
+    assert run(current, snapshot, capabilities=caps).reason is expected_reason
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_discharge_is_allowed_immediately_above_protected_soc_threshold(name: str) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    snapshot = safe(**{f"{name}_soc": 15.0001})
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
+
+    expected = DecisionState.CONTROL_SOLAX if name == "solax" else DecisionState.CONTROL_DEYE
+    assert run(current, snapshot, capabilities=caps).state is expected
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_low_valid_soc_does_not_block_verified_charge(name: str) -> None:
+    current = target(solax_w=-1_000) if name == "solax" else target(deye_w=-1_000)
+    snapshot = safe(**{f"{name}_soc": 0.0})
+    caps = verified(solax_charge=True) if name == "solax" else verified(deye_charge=True)
+
+    expected = DecisionState.CONTROL_SOLAX if name == "solax" else DecisionState.CONTROL_DEYE
+    assert run(current, snapshot, capabilities=caps).state is expected
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+@pytest.mark.parametrize("soc", [-0.001, 100.001, float("nan"), float("inf"), float("-inf"), True])
+def test_invalid_active_soc_fails_closed(name: str, soc: object) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    snapshot = safe(**{f"{name}_soc": soc})
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
+
+    assert run(current, snapshot, capabilities=caps).reason is DecisionReason.TELEMETRY_MISSING
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_missing_inactive_soc_does_not_block_single_owner(name: str) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    inactive = "deye_soc" if name == "solax" else "solax_soc"
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
+
+    expected = DecisionState.CONTROL_SOLAX if name == "solax" else DecisionState.CONTROL_DEYE
+    assert run(current, safe(**{inactive: None}), capabilities=caps).state is expected
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_missing_active_soc_blocks_discharge(name: str) -> None:
+    current = target(solax_w=1_000) if name == "solax" else target(deye_w=1_000)
+    caps = verified(solax_discharge=True) if name == "solax" else verified(deye_export=True)
+
+    assert run(current, safe(**{f"{name}_soc": None}), capabilities=caps).reason is DecisionReason.TELEMETRY_MISSING
+
+
+@pytest.mark.parametrize("name", ["solax", "deye"])
+def test_charge_does_not_require_soc(name: str) -> None:
+    current = target(solax_w=-1_000) if name == "solax" else target(deye_w=-1_000)
+    caps = verified(solax_charge=True) if name == "solax" else verified(deye_charge=True)
+
+    expected = DecisionState.CONTROL_SOLAX if name == "solax" else DecisionState.CONTROL_DEYE
+    assert run(current, safe(solax_soc=None, deye_soc=None), capabilities=caps).state is expected
 
 
 def test_projected_operational_export_limit_fails_closed() -> None:
@@ -273,6 +349,74 @@ def test_existing_measured_discharge_is_not_added_to_pcc_twice() -> None:
     )
 
     assert result.state is DecisionState.CONTROL_DEYE
+
+
+@pytest.mark.parametrize(
+    ("measured_w", "target_w", "pcc_export_w"),
+    [
+        (0.0, 2_000.0, 1_000.0),
+        (-1_000.0, 2_000.0, 1_000.0),
+        (-2_000.0, 1_000.0, 1_000.0),
+        (0.0, 5_000.0, -3_000.0),
+        (0.0, 5_000.0, 2_000.0),
+    ],
+)
+def test_discharge_delta_allows_safe_neutral_discharge_and_pcc_states(
+    measured_w: float,
+    target_w: float,
+    pcc_export_w: float,
+) -> None:
+    result = run(
+        target(solax_w=target_w),
+        safe(pcc_export_w=pcc_export_w, measured_solax_battery_power_w=measured_w),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.state is DecisionState.CONTROL_SOLAX
+
+
+def test_existing_charge_is_included_in_discharge_export_delta() -> None:
+    result = run(
+        target(solax_w=7_000),
+        safe(pcc_export_w=0, measured_solax_battery_power_w=4_000),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_TARGET_LIMIT
+
+
+def test_charge_to_discharge_transition_crossing_operational_limit_is_blocked() -> None:
+    result = run(
+        target(solax_w=5_000),
+        safe(pcc_export_w=4_000, measured_solax_battery_power_w=1_000),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.EXPORT_TARGET_LIMIT
+
+
+def test_charge_to_discharge_transition_crossing_rolling_limit_is_blocked() -> None:
+    result = run(
+        target(solax_w=4_001),
+        safe(pcc_export_w=0, rolling_export_w=5_000, measured_solax_battery_power_w=1_000),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.reason is DecisionReason.ROLLING_EXPORT_LIMIT
+
+
+@pytest.mark.parametrize(
+    ("pcc_export_w", "rolling_export_w", "target_w"),
+    [(4_800.0, 0.0, 5_000.0), (0.0, 5_000.0, 5_000.0)],
+)
+def test_export_limit_equality_is_allowed(pcc_export_w: float, rolling_export_w: float, target_w: float) -> None:
+    result = run(
+        target(solax_w=target_w),
+        safe(pcc_export_w=pcc_export_w, rolling_export_w=rolling_export_w),
+        capabilities=verified(solax_discharge=True),
+    )
+
+    assert result.state is DecisionState.CONTROL_SOLAX
 
 
 @pytest.mark.parametrize("field", ["solax_available", "deye_available"])
@@ -348,3 +492,32 @@ def test_capability_defaults_match_verified_physical_knowledge() -> None:
     assert capabilities.deye.export_power is CapabilityLevel.UNSUPPORTED
     assert capabilities.deye.charge_power is CapabilityLevel.UNSUPPORTED
     assert capabilities.deye.hold is CapabilityLevel.UNSUPPORTED
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "zero_deadband_w",
+        "solax_max_abs_power_w",
+        "deye_max_abs_power_w",
+        "protected_soc_floor_pct",
+        "discharge_guard_margin_pct",
+        "operational_export_target_w",
+        "contractual_rolling_limit_w",
+        "cross_transfer_tolerance_w",
+    ],
+)
+def test_boolean_safety_configuration_is_rejected(field: str) -> None:
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        SafetyConfig(**{field: True})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("margin", [-0.1, float("nan"), float("inf"), float("-inf")])
+def test_invalid_discharge_guard_margin_is_rejected(margin: float) -> None:
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        SafetyConfig(discharge_guard_margin_pct=margin)
+
+
+def test_soc_floor_plus_guard_margin_must_not_exceed_one_hundred() -> None:
+    with pytest.raises(ValueError, match="must not exceed 100"):
+        SafetyConfig(protected_soc_floor_pct=90, discharge_guard_margin_pct=10.001)
