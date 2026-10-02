@@ -1,4 +1,4 @@
-# ENERGY V3.0 architecture
+# ENERGY V3 architecture
 
 ENERGY V3 is a small, deterministic execution bridge around HAEO. HAEO remains
 the economic planner. V3 validates one current power target, checks whether it is
@@ -104,8 +104,7 @@ sufficient to authorize a `CONTROL_DEYE` decision.
 
 V3.0 does **not** contain:
 
-- a Home Assistant runtime;
-- AppDaemon registration;
+- physical Home Assistant execution;
 - physical service calls;
 - inverter adapters with real writes;
 - energy-budget or delivered-energy accounting;
@@ -116,4 +115,44 @@ V3.0 does **not** contain:
 - any dependency on ENERGY V2 runtime code.
 
 The mirrored `deploy/appdaemon/apps/energy_v3/` package exists only to satisfy
-repository source/deployment consistency checks. Nothing registers or loads it.
+repository source/deployment consistency checks.
+
+## V3.1 read-only shadow runtime
+
+V3.1 adds a deliberately read-only AppDaemon observation layer. It converts the
+current HAEO 15-minute forecast interval to `CurrentTarget`, converts verified live
+entities to `SafetySnapshot`, calls the pure controller and publishes diagnostic
+sensor states with `set_state()`. It has no inverter service-call path, does not
+register a physical writer and does not modify ENERGY V2 or existing manual/legacy
+control.
+
+No authoritative `ExportAuthorization` producer exists, so the runtime always
+passes `None`. Discharge consequently remains blocked by the V3 safety rules.
+Charging remains independently evaluable, but bounded-power capabilities are still
+`UNSUPPORTED` and therefore cannot result in physical control.
+
+There is no verified SolaX fault entity. The telemetry adapter represents that
+missing evidence as `solax_fault=None`; the controller treats missing fault evidence
+as `TELEMETRY_MISSING`, never as confirmed health.
+
+HAEO has no atomic plan identifier in Home Assistant. V3.1 correlates successful
+`last_run` metadata with both power-series update timestamps and requires two
+consecutive, observably identical snapshots before accepting a target. A retained
+horizon is allowed because its interval structure can remain valid across runs.
+Uncertain or sequentially mixed publications fail closed.
+
+Telemetry freshness means only that the relevant Home Assistant state records have
+recent `last_updated` timestamps. It is explicitly not proof of a fresh physical
+sample. Diagnostics keep this limitation visible and report missing SolaX fault
+evidence as incomplete telemetry.
+
+The shadow callback contains exceptions from collection, conversion, decision and
+diagnostic publication. It publishes a fail-safe decision before the remaining
+diagnostics and the final decision last; best-effort runtime-error publication
+prevents a previous positive diagnostic from surviving a partial update. Runtime
+state holds no prior target or decision, so restart and recovery always reevaluate
+the current Home Assistant inputs.
+
+The checked-in `energy_v3_shadow.yaml.disabled` file is an inactive deployment
+template. It must not be renamed or copied into an active AppDaemon configuration
+outside a supervised shadow-only deployment.
