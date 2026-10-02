@@ -79,7 +79,7 @@ def current_target_from_states(
     if horizon is None or solax is None or deye is None:
         return HaeoTargetResult(None, HaeoError.FORECAST_MISSING, status, last_run)
     publication_times = [
-        _record_timestamp(states.get(entity_id), "last_updated")
+        _record_timestamp(states.get(entity_id), "last_reported")
         for entity_id in (OPTIMIZER_STATUS, SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER)
     ]
     if any(value is None for value in publication_times):
@@ -179,7 +179,7 @@ def _publication_signature(states: Mapping[str, Mapping[str, Any] | None]) -> tu
             (
                 entity_id,
                 record.get("state") if record else None,
-                record.get("last_updated") if record else None,
+                record.get("last_reported") if record else None,
                 _attributes(record).get("last_run") if record else None,
                 repr(_attributes(record).get("forecast")) if record else None,
             )

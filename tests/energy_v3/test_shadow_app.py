@@ -82,21 +82,25 @@ def runtime_states(now: datetime):
             "state": "success",
             "attributes": {"last_run": now.isoformat()},
             "last_updated": (now + timedelta(milliseconds=10)).isoformat(),
+            "last_reported": (now + timedelta(milliseconds=10)).isoformat(),
         },
         OPTIMIZER_HORIZON: {
             "state": boundaries[0].isoformat(),
             "attributes": {"forecast": [{"time": value.isoformat()} for value in boundaries]},
             "last_updated": (now - timedelta(minutes=12)).isoformat(),
+            "last_reported": (now - timedelta(minutes=12)).isoformat(),
         },
         SOLAX_ACTIVE_POWER: {
             "state": "1",
             "attributes": {"forecast": [{"time": value.isoformat(), "value": 1} for value in boundaries[:-1]]},
             "last_updated": (now + timedelta(milliseconds=20)).isoformat(),
+            "last_reported": (now + timedelta(milliseconds=20)).isoformat(),
         },
         DEYE_ACTIVE_POWER: {
             "state": "0",
             "attributes": {"forecast": [{"time": value.isoformat(), "value": 0} for value in boundaries[:-1]]},
             "last_updated": (now + timedelta(milliseconds=30)).isoformat(),
+            "last_reported": (now + timedelta(milliseconds=30)).isoformat(),
         },
     }
     values = {
