@@ -27,6 +27,7 @@ class HaeoError(StrEnum):
     FORECAST_MISSING = "FORECAST_MISSING"
     FORECAST_MALFORMED = "FORECAST_MALFORMED"
     FORECAST_UNALIGNED = "FORECAST_UNALIGNED"
+    PUBLICATION_UNCERTAIN = "PUBLICATION_UNCERTAIN"
     INTERVAL_NOT_CURRENT = "INTERVAL_NOT_CURRENT"
 
 
@@ -48,6 +49,8 @@ def current_target_from_states(
     now: datetime,
     max_optimizer_age: timedelta = timedelta(minutes=30),
     interval: timedelta = timedelta(minutes=15),
+    publication_tolerance: timedelta = timedelta(seconds=5),
+    comparison_states: Mapping[str, Mapping[str, Any] | None] | None = None,
 ) -> HaeoTargetResult:
     """Build the target for ``now`` from one coherent HAEO forecast publication."""
 
@@ -67,11 +70,28 @@ def current_target_from_states(
     if age < -timedelta(seconds=5) or age > max_optimizer_age:
         return HaeoTargetResult(None, HaeoError.OPTIMIZER_STALE, status, last_run)
 
+    if comparison_states is not None and _publication_signature(states) != _publication_signature(comparison_states):
+        return HaeoTargetResult(None, HaeoError.PUBLICATION_UNCERTAIN, status, last_run)
+
     horizon = _forecast(states.get(OPTIMIZER_HORIZON))
     solax = _forecast(states.get(SOLAX_ACTIVE_POWER))
     deye = _forecast(states.get(DEYE_ACTIVE_POWER))
     if horizon is None or solax is None or deye is None:
         return HaeoTargetResult(None, HaeoError.FORECAST_MISSING, status, last_run)
+    publication_times = [
+        _record_timestamp(states.get(entity_id), "last_updated")
+        for entity_id in (OPTIMIZER_STATUS, SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER)
+    ]
+    if any(value is None for value in publication_times):
+        return HaeoTargetResult(None, HaeoError.PUBLICATION_UNCERTAIN, status, last_run)
+    typed_publication_times = [value for value in publication_times if value is not None]
+    if any(
+        value < last_run or value - last_run > publication_tolerance or value - now > timedelta(seconds=5)
+        for value in typed_publication_times
+    ):
+        return HaeoTargetResult(None, HaeoError.PUBLICATION_UNCERTAIN, status, last_run)
+    if max(typed_publication_times) - min(typed_publication_times) > publication_tolerance:
+        return HaeoTargetResult(None, HaeoError.PUBLICATION_UNCERTAIN, status, last_run)
     if len(horizon) != EXPECTED_PERIODS + 1 or len(solax) != EXPECTED_PERIODS or len(deye) != EXPECTED_PERIODS:
         return HaeoTargetResult(None, HaeoError.FORECAST_MALFORMED, status, last_run)
 
@@ -143,6 +163,28 @@ def _parse_timestamp(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if _aware(parsed) else None
+
+
+def _record_timestamp(record: Mapping[str, Any] | None, key: str) -> datetime | None:
+    return _parse_timestamp(record.get(key)) if record else None
+
+
+def _publication_signature(states: Mapping[str, Mapping[str, Any] | None]) -> tuple[object, ...]:
+    """Return the observable HAEO publication identity without inventing a plan ID."""
+
+    signature: list[object] = []
+    for entity_id in HAEO_ENTITY_IDS:
+        record = states.get(entity_id)
+        signature.extend(
+            (
+                entity_id,
+                record.get("state") if record else None,
+                record.get("last_updated") if record else None,
+                _attributes(record).get("last_run") if record else None,
+                repr(_attributes(record).get("forecast")) if record else None,
+            )
+        )
+    return tuple(signature)
 
 
 def _aware(value: datetime) -> bool:

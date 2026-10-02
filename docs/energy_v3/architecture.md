@@ -135,6 +135,24 @@ There is no verified SolaX fault entity. The telemetry adapter represents that
 missing evidence as `solax_fault=None`; the controller treats missing fault evidence
 as `TELEMETRY_MISSING`, never as confirmed health.
 
+HAEO has no atomic plan identifier in Home Assistant. V3.1 correlates successful
+`last_run` metadata with both power-series update timestamps and requires two
+consecutive, observably identical snapshots before accepting a target. A retained
+horizon is allowed because its interval structure can remain valid across runs.
+Uncertain or sequentially mixed publications fail closed.
+
+Telemetry freshness means only that the relevant Home Assistant state records have
+recent `last_updated` timestamps. It is explicitly not proof of a fresh physical
+sample. Diagnostics keep this limitation visible and report missing SolaX fault
+evidence as incomplete telemetry.
+
+The shadow callback contains exceptions from collection, conversion, decision and
+diagnostic publication. It publishes a fail-safe decision before the remaining
+diagnostics and the final decision last; best-effort runtime-error publication
+prevents a previous positive diagnostic from surviving a partial update. Runtime
+state holds no prior target or decision, so restart and recovery always reevaluate
+the current Home Assistant inputs.
+
 The checked-in `energy_v3_shadow.yaml.disabled` file is an inactive deployment
 template. It must not be renamed or copied into an active AppDaemon configuration
 outside a supervised shadow-only deployment.

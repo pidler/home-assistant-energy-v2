@@ -20,10 +20,13 @@ START = datetime(2026, 10, 2, 0, 0, tzinfo=UTC)
 def schema(*, start: datetime = START, periods: int = 192, solax: float = 1.25, deye: float = -2.5):
     boundaries = [start + timedelta(minutes=15 * index) for index in range(periods + 1)]
     times = boundaries[:-1]
+    last_run = NOW - timedelta(minutes=2)
+    published = last_run + timedelta(milliseconds=100)
     return {
         OPTIMIZER_STATUS: {
             "state": "success",
-            "attributes": {"last_run": (NOW - timedelta(minutes=2)).isoformat()},
+            "attributes": {"last_run": last_run.isoformat()},
+            "last_updated": published.isoformat(),
         },
         OPTIMIZER_HORIZON: {
             "state": boundaries[0].isoformat(),
@@ -32,16 +35,25 @@ def schema(*, start: datetime = START, periods: int = 192, solax: float = 1.25, 
                 "period_count": periods,
                 "smallest_period_seconds": 900,
             },
+            "last_updated": (last_run - timedelta(minutes=12)).isoformat(),
         },
         SOLAX_ACTIVE_POWER: {
             "state": str(solax),
             "attributes": {"forecast": [{"time": value.isoformat(), "value": solax} for value in times]},
+            "last_updated": (published + timedelta(milliseconds=10)).isoformat(),
         },
         DEYE_ACTIVE_POWER: {
             "state": str(deye),
             "attributes": {"forecast": [{"time": value.isoformat(), "value": deye} for value in times]},
+            "last_updated": (published + timedelta(milliseconds=20)).isoformat(),
         },
     }
+
+
+def set_publication_time(states, last_run: datetime) -> None:
+    states[OPTIMIZER_STATUS]["attributes"]["last_run"] = last_run.isoformat()
+    for offset, entity_id in enumerate((OPTIMIZER_STATUS, SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER)):
+        states[entity_id]["last_updated"] = (last_run + timedelta(milliseconds=offset + 1)).isoformat()
 
 
 def test_real_haeo_schema_selects_current_interval_and_converts_kw_to_w() -> None:
@@ -60,7 +72,7 @@ def test_real_haeo_schema_selects_current_interval_and_converts_kw_to_w() -> Non
 
 def test_interval_start_is_inclusive_and_end_is_exclusive() -> None:
     states = schema()
-    states[OPTIMIZER_STATUS]["attributes"]["last_run"] = datetime(2026, 10, 2, 11, 59, tzinfo=UTC).isoformat()
+    set_publication_time(states, datetime(2026, 10, 2, 11, 59, tzinfo=UTC))
     at_start = current_target_from_states(states, now=datetime(2026, 10, 2, 12, 0, tzinfo=UTC))
     at_end = current_target_from_states(states, now=datetime(2026, 10, 2, 12, 15, tzinfo=UTC))
 
@@ -81,6 +93,31 @@ def test_stale_last_run_fails_closed_even_when_status_is_success() -> None:
     states[OPTIMIZER_STATUS]["attributes"]["last_run"] = (NOW - timedelta(minutes=31)).isoformat()
 
     assert current_target_from_states(states, now=NOW).error is HaeoError.OPTIMIZER_STALE
+
+
+def test_fresh_last_run_with_retained_old_power_forecasts_fails_closed() -> None:
+    states = schema()
+    stale_publication = NOW - timedelta(minutes=10)
+    states[SOLAX_ACTIVE_POWER]["last_updated"] = stale_publication.isoformat()
+    states[DEYE_ACTIVE_POWER]["last_updated"] = stale_publication.isoformat()
+
+    assert current_target_from_states(states, now=NOW).error is HaeoError.PUBLICATION_UNCERTAIN
+
+
+def test_mixed_old_solax_and_new_deye_publication_fails_closed() -> None:
+    states = schema()
+    states[SOLAX_ACTIVE_POWER]["last_updated"] = (NOW - timedelta(minutes=10)).isoformat()
+
+    assert current_target_from_states(states, now=NOW).error is HaeoError.PUBLICATION_UNCERTAIN
+
+
+def test_forecast_replacement_between_snapshots_fails_closed() -> None:
+    before = schema(solax=1)
+    after = schema(solax=3)
+
+    result = current_target_from_states(after, comparison_states=before, now=NOW)
+
+    assert result.error is HaeoError.PUBLICATION_UNCERTAIN
 
 
 @pytest.mark.parametrize("entity_id", [OPTIMIZER_HORIZON, SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER])

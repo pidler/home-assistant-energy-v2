@@ -36,7 +36,7 @@ def telemetry_states():
 def test_verified_telemetry_is_normalized_without_using_deye_inverter_sign() -> None:
     result = safety_snapshot_from_states(telemetry_states(), now=NOW)
 
-    assert result.status is TelemetryStatus.FRESH
+    assert result.status is TelemetryStatus.INCOMPLETE
     assert result.snapshot.measured_solax_battery_power_w == 120
     assert result.snapshot.measured_deye_battery_power_w == -57
     assert result.snapshot.pcc_export_w == 0
@@ -75,6 +75,9 @@ def test_missing_solax_fault_evidence_is_explicit_and_fail_closed() -> None:
 
     assert result.snapshot.solax_fault is None
     assert "solax_fault:evidence_missing" in result.issues
+    assert result.status is TelemetryStatus.INCOMPLETE
+    assert result.freshness_basis == "home_assistant_last_updated"
+    assert result.physical_measurement_freshness_verified is False
 
 
 def test_missing_export_authorization_blocks_discharge_but_not_charge_evaluation() -> None:

@@ -32,6 +32,7 @@ TELEMETRY_ENTITY_IDS = tuple(ENTITY_IDS.values())
 
 class TelemetryStatus(StrEnum):
     FRESH = "fresh"
+    INCOMPLETE = "incomplete"
     STALE = "stale"
     MISSING = "missing"
     INVALID = "invalid"
@@ -43,6 +44,8 @@ class TelemetryResult:
     status: TelemetryStatus
     issues: tuple[str, ...]
     observed_modes: Mapping[str, str]
+    freshness_basis: str
+    physical_measurement_freshness_verified: bool
 
 
 def safety_snapshot_from_states(
@@ -131,6 +134,8 @@ def safety_snapshot_from_states(
             "solax_run_mode": _state(required["solax_run_mode"]),
             "deye_work_mode": _state(required["deye_work_mode"]),
         },
+        freshness_basis="home_assistant_last_updated",
+        physical_measurement_freshness_verified=False,
     )
 
 
@@ -162,6 +167,8 @@ def _status(issues: list[str]) -> TelemetryStatus:
         return TelemetryStatus.INVALID
     if any(issue.endswith(":stale") for issue in issues):
         return TelemetryStatus.STALE
+    if any(issue.endswith(":evidence_missing") for issue in issues):
+        return TelemetryStatus.INCOMPLETE
     return TelemetryStatus.FRESH
 
 
