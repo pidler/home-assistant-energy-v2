@@ -1,0 +1,8 @@
+# Deployment template only. The .disabled suffix prevents AppDaemon activation.
+# Rename to energy_v3_shadow.yaml only during a supervised shadow deployment.
+energy_v3_shadow:
+  module: energy_v3.shadow_app
+  class: EnergyV3ShadowApp
+  coalesce_seconds: 1
+  periodic_seconds: 30
+  optimizer_max_age_minutes: 30

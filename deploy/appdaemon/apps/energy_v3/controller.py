@@ -112,6 +112,8 @@ def _evaluate_safety(
         return DecisionReason.WRITER_CONFLICT
     if not safety.solax_available or not safety.deye_available:
         return DecisionReason.INVERTER_UNAVAILABLE
+    if safety.solax_fault is None or safety.deye_fault is None:
+        return DecisionReason.TELEMETRY_MISSING
     if safety.solax_fault or safety.deye_fault:
         return DecisionReason.INVERTER_FAULT
 

@@ -84,8 +84,8 @@ class SafetySnapshot:
     export_authorization: ExportAuthorization | None
     solax_available: bool
     deye_available: bool
-    solax_fault: bool
-    deye_fault: bool
+    solax_fault: bool | None
+    deye_fault: bool | None
     measured_solax_battery_power_w: float | None
     measured_deye_battery_power_w: float | None
     writer_conflict: bool

@@ -546,6 +546,11 @@ def test_inverter_fault_fails_closed(field: str) -> None:
     assert run(target(), replace(safe(), **{field: True})).reason is DecisionReason.INVERTER_FAULT
 
 
+@pytest.mark.parametrize("field", ["solax_fault", "deye_fault"])
+def test_missing_fault_evidence_fails_closed(field: str) -> None:
+    assert run(target(), replace(safe(), **{field: None})).reason is DecisionReason.TELEMETRY_MISSING
+
+
 def test_writer_conflict_fails_closed() -> None:
     assert run(target(), safe(writer_conflict=True)).reason is DecisionReason.WRITER_CONFLICT
 
