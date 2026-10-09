@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -70,8 +71,11 @@ class EnergyV3ShadowApp(hass.Hass):
             self._publish_runtime_error(now, type(error).__name__)
 
     def _collect_states(self) -> dict[str, Any]:
+        all_states = self.get_state()
+        if not isinstance(all_states, Mapping):
+            raise TypeError("AppDaemon did not return a state snapshot")
         return {
-            entity_id: self.get_state(entity_id, attribute="all")
+            entity_id: all_states.get(entity_id)
             for entity_id in dict.fromkeys((*HAEO_ENTITY_IDS, *TELEMETRY_ENTITY_IDS))
         }
 
@@ -90,11 +94,13 @@ class EnergyV3ShadowApp(hass.Hass):
             DIAGNOSTIC_ENTITIES["decision"],
             state="RETURN_TO_NORMAL",
             attributes={**common, **layers, "controller_evaluated": False, "publication_complete": False},
+            replace=True,
         )
         self.set_state(
             DIAGNOSTIC_ENTITIES["reason"],
             state="DIAGNOSTIC_PUBLICATION_IN_PROGRESS",
             attributes={**common, **layers, "publication_complete": False},
+            replace=True,
         )
         interval_state = target.timestamp.isoformat() if target else "invalid"
         self.set_state(
@@ -108,6 +114,7 @@ class EnergyV3ShadowApp(hass.Hass):
                 "input_valid": haeo.valid,
                 "input_error": haeo.error.value if haeo.error else None,
             },
+            replace=True,
         )
         self._set_power("solax_target", target.solax_target_w if target else None, common)
         self._set_power("deye_target", target.deye_target_w if target else None, common)
@@ -122,17 +129,20 @@ class EnergyV3ShadowApp(hass.Hass):
                 "manual_legacy_control": "observed_not_owned",
                 **telemetry.observed_modes,
             },
+            replace=True,
         )
         self.set_state(
             DIAGNOSTIC_ENTITIES["export_authorization"],
             state="missing",
             attributes={**common, "discharge_allowed": False, "source": None},
+            replace=True,
         )
         reason = decision.reason.value if decision else f"HAEO_{haeo.error.value if haeo.error else 'INVALID'}"
         self.set_state(
             DIAGNOSTIC_ENTITIES["reason"],
             state=reason,
             attributes={**common, **layers, "publication_complete": True},
+            replace=True,
         )
         self.set_state(
             DIAGNOSTIC_ENTITIES["decision"],
@@ -143,6 +153,7 @@ class EnergyV3ShadowApp(hass.Hass):
                 "controller_evaluated": decision is not None,
                 "publication_complete": True,
             },
+            replace=True,
         )
 
     def _publish_runtime_error(self, now: datetime, error_type: str) -> None:
@@ -163,7 +174,7 @@ class EnergyV3ShadowApp(hass.Hass):
         }
         for key, (state, attributes) in values.items():
             try:
-                self.set_state(DIAGNOSTIC_ENTITIES[key], state=state, attributes=attributes)
+                self.set_state(DIAGNOSTIC_ENTITIES[key], state=state, attributes=attributes, replace=True)
             except Exception:
                 continue
 
@@ -172,6 +183,7 @@ class EnergyV3ShadowApp(hass.Hass):
             DIAGNOSTIC_ENTITIES[key],
             state="unavailable" if value is None else value,
             attributes={**common, "unit_of_measurement": "W", "device_class": "power"},
+            replace=True,
         )
 
 

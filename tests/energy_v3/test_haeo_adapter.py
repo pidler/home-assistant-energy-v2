@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -110,6 +111,30 @@ def test_unchanged_forecast_with_old_last_updated_and_fresh_last_reported_is_acc
     assert current_target_from_states(states, now=NOW).valid
 
 
+def test_appdaemon_cached_last_reported_for_unchanged_forecast_is_accepted_within_interval() -> None:
+    states = schema()
+    last_run = datetime.fromisoformat(states[OPTIMIZER_STATUS]["attributes"]["last_run"])
+    cached_publication = last_run - timedelta(minutes=12)
+    for entity_id in (SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER):
+        states[entity_id]["last_updated"] = cached_publication.isoformat()
+        states[entity_id]["last_reported"] = cached_publication.isoformat()
+
+    assert current_target_from_states(states, comparison_states=deepcopy(states), now=NOW).valid
+
+
+def test_appdaemon_cached_last_reported_older_than_interval_fails_closed() -> None:
+    states = schema()
+    last_run = datetime.fromisoformat(states[OPTIMIZER_STATUS]["attributes"]["last_run"])
+    cached_publication = last_run - timedelta(minutes=16)
+    for entity_id in (SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER):
+        states[entity_id]["last_updated"] = cached_publication.isoformat()
+        states[entity_id]["last_reported"] = cached_publication.isoformat()
+
+    result = current_target_from_states(states, comparison_states=deepcopy(states), now=NOW)
+
+    assert result.error is HaeoError.PUBLICATION_UNCERTAIN
+
+
 def test_new_optimizer_status_with_old_battery_last_reported_fails_closed() -> None:
     states = schema()
     stale_publication = NOW - timedelta(minutes=10)
@@ -148,6 +173,31 @@ def test_publication_outside_tolerance_fails_closed() -> None:
 def test_forecast_replacement_between_snapshots_fails_closed() -> None:
     before = schema(solax=1)
     after = schema(solax=3)
+
+    result = current_target_from_states(after, comparison_states=before, now=NOW)
+
+    assert result.error is HaeoError.PUBLICATION_UNCERTAIN
+
+
+def test_equivalent_forecast_mapping_order_between_snapshots_is_accepted() -> None:
+    before = schema()
+    after = deepcopy(before)
+    for entity_id in (SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER):
+        after[entity_id]["attributes"]["forecast"] = [
+            {"value": item["value"], "time": item["time"]} for item in after[entity_id]["attributes"]["forecast"]
+        ]
+
+    result = current_target_from_states(after, comparison_states=before, now=NOW)
+
+    assert result.valid
+
+
+def test_last_reported_change_between_snapshots_fails_closed() -> None:
+    before = schema()
+    after = deepcopy(before)
+    after[SOLAX_ACTIVE_POWER]["last_reported"] = (
+        datetime.fromisoformat(after[SOLAX_ACTIVE_POWER]["last_reported"]) + timedelta(milliseconds=1)
+    ).isoformat()
 
     result = current_target_from_states(after, comparison_states=before, now=NOW)
 

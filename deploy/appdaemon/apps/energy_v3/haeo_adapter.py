@@ -78,19 +78,17 @@ def current_target_from_states(
     deye = _forecast(states.get(DEYE_ACTIVE_POWER))
     if horizon is None or solax is None or deye is None:
         return HaeoTargetResult(None, HaeoError.FORECAST_MISSING, status, last_run)
-    publication_times = [
-        _record_timestamp(states.get(entity_id), "last_reported")
+    publication_times = {
+        entity_id: _record_timestamp(states.get(entity_id), "last_reported")
         for entity_id in (OPTIMIZER_STATUS, SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER)
-    ]
-    if any(value is None for value in publication_times):
+    }
+    if any(value is None for value in publication_times.values()):
         return HaeoTargetResult(None, HaeoError.PUBLICATION_UNCERTAIN, status, last_run)
-    typed_publication_times = [value for value in publication_times if value is not None]
-    if any(
-        value < last_run or value - last_run > publication_tolerance or value - now > timedelta(seconds=5)
-        for value in typed_publication_times
-    ):
+    typed_publication_times = {key: value for key, value in publication_times.items() if value is not None}
+    if any(value - now > timedelta(seconds=5) for value in typed_publication_times.values()):
         return HaeoTargetResult(None, HaeoError.PUBLICATION_UNCERTAIN, status, last_run)
-    if max(typed_publication_times) - min(typed_publication_times) > publication_tolerance:
+    status_publication = typed_publication_times[OPTIMIZER_STATUS]
+    if status_publication < last_run or status_publication - last_run > publication_tolerance:
         return HaeoTargetResult(None, HaeoError.PUBLICATION_UNCERTAIN, status, last_run)
     if len(horizon) != EXPECTED_PERIODS + 1 or len(solax) != EXPECTED_PERIODS or len(deye) != EXPECTED_PERIODS:
         return HaeoTargetResult(None, HaeoError.FORECAST_MALFORMED, status, last_run)
@@ -113,6 +111,24 @@ def current_target_from_states(
         or typed_deye_times != typed_boundaries[:-1]
     ):
         return HaeoTargetResult(None, HaeoError.FORECAST_UNALIGNED, status, last_run)
+
+    fresh_publications = [status_publication]
+    for entity_id in (SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER):
+        publication = typed_publication_times[entity_id]
+        if last_run <= publication <= last_run + publication_tolerance:
+            fresh_publications.append(publication)
+            continue
+        # AppDaemon updates its cache from state_changed events. When HAEO
+        # republishes an identical forecast, Home Assistant advances
+        # last_reported without emitting a state_changed event, so AppDaemon
+        # retains the boundary publication in both metadata fields. The
+        # complete, aligned payload is safe only for this bounded cache case.
+        last_updated = _record_timestamp(states.get(entity_id), "last_updated")
+        cache_age = last_run - publication
+        if last_updated != publication or cache_age < timedelta(0) or cache_age > interval + publication_tolerance:
+            return HaeoTargetResult(None, HaeoError.PUBLICATION_UNCERTAIN, status, last_run)
+    if max(fresh_publications) - min(fresh_publications) > publication_tolerance:
+        return HaeoTargetResult(None, HaeoError.PUBLICATION_UNCERTAIN, status, last_run)
 
     active_index = next(
         (
@@ -170,7 +186,13 @@ def _record_timestamp(record: Mapping[str, Any] | None, key: str) -> datetime | 
 
 
 def _publication_signature(states: Mapping[str, Mapping[str, Any] | None]) -> tuple[object, ...]:
-    """Return the observable HAEO publication identity without inventing a plan ID."""
+    """Return the semantic HAEO publication identity without inventing a plan ID.
+
+    Mapping key order is not part of the HAEO contract. Comparing
+    ``repr(forecast)`` made that irrelevant representation detail part of the
+    identity. Keep the publication metadata, but compare only the ordered HAEO
+    contract fields.
+    """
 
     signature: list[object] = []
     for entity_id in HAEO_ENTITY_IDS:
@@ -181,10 +203,21 @@ def _publication_signature(states: Mapping[str, Mapping[str, Any] | None]) -> tu
                 record.get("state") if record else None,
                 record.get("last_reported") if record else None,
                 _attributes(record).get("last_run") if record else None,
-                repr(_attributes(record).get("forecast")) if record else None,
+                _forecast_signature(entity_id, record),
             )
         )
     return tuple(signature)
+
+
+def _forecast_signature(entity_id: str, record: Mapping[str, Any] | None) -> object:
+    forecast = _forecast(record)
+    if forecast is None:
+        return None
+    if entity_id == OPTIMIZER_HORIZON:
+        return tuple(item.get("time") for item in forecast)
+    if entity_id in (SOLAX_ACTIVE_POWER, DEYE_ACTIVE_POWER):
+        return tuple((item.get("time"), item.get("value")) for item in forecast)
+    return None
 
 
 def _aware(value: datetime) -> bool:
