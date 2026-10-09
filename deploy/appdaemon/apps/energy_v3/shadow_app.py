@@ -181,7 +181,7 @@ class EnergyV3ShadowApp(hass.Hass):
     def _set_power(self, key: str, value: float | None, common: dict[str, Any]) -> None:
         self.set_state(
             DIAGNOSTIC_ENTITIES[key],
-            state="unavailable" if value is None else value,
+            state="unavailable" if value is None else str(value),
             attributes={**common, "unit_of_measurement": "W", "device_class": "power"},
             replace=True,
         )

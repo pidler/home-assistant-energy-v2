@@ -4,12 +4,39 @@ import importlib
 import inspect
 import sys
 import types
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+def appdaemon_4_5_13_http_payload(state: Any, attributes: dict[str, Any]) -> dict[str, Any]:
+    """Reproduce AppDaemon's clean_http_kwargs() path before its HA REST POST."""
+
+    def clean(value: Any) -> Any:
+        if value is True:
+            return "true"
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, Mapping):
+            return {key: clean(item) for key, item in value.items()}
+        if isinstance(value, Iterable):
+            return [clean(item) for item in value]
+        return str(value)
+
+    def remove_literals(value: Any) -> Any:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, Mapping):
+            return {key: remove_literals(item) for key, item in value.items() if item not in (None, False)}
+        if isinstance(value, Iterable):
+            return [remove_literals(item) for item in value if item not in (None, False)]
+        return value
+
+    return remove_literals(clean({"state": state, "attributes": attributes}))
 
 
 class ShadowStubHass:
@@ -24,6 +51,8 @@ class ShadowStubHass:
         self.state_snapshots: list[dict[str, Any]] = []
         self.get_state_calls: list[str | None] = []
         self.reject_merged_metadata = False
+        self.simulate_appdaemon_http_cleaning = False
+        self.http_payloads: list[tuple[str, dict[str, Any]]] = []
         self.fail_set_state_once: set[str] = set()
         self.fail_run_in_once = False
 
@@ -50,6 +79,11 @@ class ShadowStubHass:
         if entity_id in self.fail_set_state_once:
             self.fail_set_state_once.remove(entity_id)
             raise RuntimeError("simulated publication failure")
+        if self.simulate_appdaemon_http_cleaning:
+            payload = appdaemon_4_5_13_http_payload(kwargs.get("state"), kwargs.get("attributes", {}))
+            self.http_payloads.append((entity_id, payload))
+            if "state" not in payload:
+                raise RuntimeError("simulated Home Assistant HTTP 400: state omitted by AppDaemon")
         if self.reject_merged_metadata and not kwargs.get("replace", False):
             existing = self.published.get(entity_id, {}).get("attributes", {})
             merged = {**existing, **kwargs.get("attributes", {})}
@@ -162,8 +196,8 @@ def test_shadow_publishes_targets_even_when_execution_is_rejected() -> None:
 
     app._evaluate()
 
-    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["state"] == 1000
-    assert app.published[module.DIAGNOSTIC_ENTITIES["deye_target"]]["state"] == 0
+    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["state"] == "1000.0"
+    assert app.published[module.DIAGNOSTIC_ENTITIES["deye_target"]]["state"] == "0.0"
     assert app.published[module.DIAGNOSTIC_ENTITIES["decision"]]["state"] == "RETURN_TO_NORMAL"
     assert app.published[module.DIAGNOSTIC_ENTITIES["reason"]]["state"] == "TELEMETRY_MISSING"
     assert app.published[module.DIAGNOSTIC_ENTITIES["export_authorization"]]["state"] == "missing"
@@ -194,7 +228,7 @@ def test_runtime_reads_two_atomic_appdaemon_snapshots() -> None:
     app._evaluate()
 
     assert app.get_state_calls == [None, None]
-    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["state"] == 1000
+    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["state"] == "1000.0"
 
 
 def test_haeo_update_between_atomic_snapshots_fails_closed() -> None:
@@ -301,9 +335,62 @@ def test_diagnostic_publication_replaces_stale_home_assistant_metadata() -> None
 
     app._evaluate()
 
-    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["state"] == 1000
+    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["state"] == "1000.0"
     assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["replace"] is True
     assert all(payload["replace"] is True for payload in app.published.values())
+
+
+def test_appdaemon_http_cleaner_reproduces_numeric_zero_omission() -> None:
+    payload = appdaemon_4_5_13_http_payload(0.0, {"unit_of_measurement": "W"})
+
+    assert "state" not in payload
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0.0, "0.0"),
+        (526.315789, "526.315789"),
+        (-526.315789, "-526.315789"),
+        (None, "unavailable"),
+    ],
+)
+def test_power_diagnostics_survive_appdaemon_http_cleaning(value: float | None, expected: str) -> None:
+    module = import_shadow_app()
+    app = module.EnergyV3ShadowApp()
+    app.simulate_appdaemon_http_cleaning = True
+
+    app._set_power("solax_target", value, {"shadow_mode": True, "physical_control": False})
+
+    entity_id, payload = app.http_payloads[-1]
+    assert entity_id == module.DIAGNOSTIC_ENTITIES["solax_target"]
+    assert payload["state"] == expected
+    assert payload["attributes"]["unit_of_measurement"] == "W"
+    assert payload["attributes"]["device_class"] == "power"
+    assert app.published[entity_id]["replace"] is True
+
+
+def test_normal_and_fail_safe_diagnostics_always_have_http_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = import_shadow_app()
+    app = module.EnergyV3ShadowApp()
+    app.args = {}
+    app.states = runtime_states(datetime.now(UTC))
+    app.simulate_appdaemon_http_cleaning = True
+    app.initialize()
+
+    app._evaluate()
+    normal_payloads = app.http_payloads.copy()
+    assert {entity_id for entity_id, _payload in normal_payloads} == set(module.DIAGNOSTIC_ENTITIES.values())
+    assert all("state" in payload for _entity_id, payload in normal_payloads)
+    assert app.published[module.DIAGNOSTIC_ENTITIES["deye_target"]]["state"] == "0.0"
+
+    app.http_payloads.clear()
+    monkeypatch.setattr(module, "current_target_from_states", lambda *_args, **_kwargs: 1 / 0)
+    app._evaluate()
+
+    assert {entity_id for entity_id, _payload in app.http_payloads} == set(module.DIAGNOSTIC_ENTITIES.values())
+    assert all("state" in payload for _entity_id, payload in app.http_payloads)
+    assert app.published[module.DIAGNOSTIC_ENTITIES["reason"]]["state"] == "RUNTIME_ERROR"
 
 
 def test_runtime_recovers_on_next_evaluation(monkeypatch: pytest.MonkeyPatch) -> None:
