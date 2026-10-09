@@ -205,15 +205,15 @@ def test_shadow_publishes_targets_even_when_execution_is_rejected() -> None:
         "observed_not_owned"
     )
     decision_attributes = app.published[module.DIAGNOSTIC_ENTITIES["decision"]]["attributes"]
-    assert decision_attributes["haeo_valid"] is True
+    assert decision_attributes["haeo_valid"] == "true"
     assert decision_attributes["telemetry_status"] == "incomplete"
-    assert decision_attributes["missing_fault_evidence"] is True
+    assert decision_attributes["missing_fault_evidence"] == "true"
     assert decision_attributes["export_authorization_status"] == "missing"
     assert decision_attributes["hardware_capability_status"] == "unsupported"
     assert decision_attributes["controller_reason"] == "TELEMETRY_MISSING"
     assert (
         app.published[module.DIAGNOSTIC_ENTITIES["telemetry"]]["attributes"]["physical_measurement_freshness_verified"]
-        is False
+        == "false"
     )
     assert app.services == []
 
@@ -341,9 +341,30 @@ def test_diagnostic_publication_replaces_stale_home_assistant_metadata() -> None
 
 
 def test_appdaemon_http_cleaner_reproduces_numeric_zero_omission() -> None:
-    payload = appdaemon_4_5_13_http_payload(0.0, {"unit_of_measurement": "W"})
+    payload = appdaemon_4_5_13_http_payload(
+        0.0,
+        {"false_value": False, "none_value": None, "integer_zero": 0, "float_zero": 0.0, "true_value": True},
+    )
 
     assert "state" not in payload
+    assert payload["attributes"] == {"true_value": "true"}
+
+
+def test_false_diagnostic_flags_survive_appdaemon_http_cleaning() -> None:
+    module = import_shadow_app()
+    expected = {
+        "physical_control": "false",
+        "discharge_allowed": "false",
+        "publication_complete": "false",
+        "controller_evaluated": "false",
+    }
+
+    payload = appdaemon_4_5_13_http_payload(
+        "RETURN_TO_NORMAL",
+        {key: module._diagnostic_bool(False) for key in expected},
+    )
+
+    assert payload["attributes"] == expected
 
 
 @pytest.mark.parametrize(
@@ -360,13 +381,19 @@ def test_power_diagnostics_survive_appdaemon_http_cleaning(value: float | None, 
     app = module.EnergyV3ShadowApp()
     app.simulate_appdaemon_http_cleaning = True
 
-    app._set_power("solax_target", value, {"shadow_mode": True, "physical_control": False})
+    app._set_power(
+        "solax_target",
+        value,
+        {"shadow_mode": module._diagnostic_bool(True), "physical_control": module._diagnostic_bool(False)},
+    )
 
     entity_id, payload = app.http_payloads[-1]
     assert entity_id == module.DIAGNOSTIC_ENTITIES["solax_target"]
     assert payload["state"] == expected
     assert payload["attributes"]["unit_of_measurement"] == "W"
     assert payload["attributes"]["device_class"] == "power"
+    assert payload["attributes"]["shadow_mode"] == "true"
+    assert payload["attributes"]["physical_control"] == "false"
     assert app.published[entity_id]["replace"] is True
 
 
@@ -382,14 +409,51 @@ def test_normal_and_fail_safe_diagnostics_always_have_http_state(monkeypatch: py
     normal_payloads = app.http_payloads.copy()
     assert {entity_id for entity_id, _payload in normal_payloads} == set(module.DIAGNOSTIC_ENTITIES.values())
     assert all("state" in payload for _entity_id, payload in normal_payloads)
+    assert all(payload["attributes"]["shadow_mode"] == "true" for _entity_id, payload in normal_payloads)
+    assert all(payload["attributes"]["physical_control"] == "false" for _entity_id, payload in normal_payloads)
+
+    decision_payloads = [
+        payload for entity_id, payload in normal_payloads if entity_id == module.DIAGNOSTIC_ENTITIES["decision"]
+    ]
+    reason_payloads = [
+        payload for entity_id, payload in normal_payloads if entity_id == module.DIAGNOSTIC_ENTITIES["reason"]
+    ]
+    assert decision_payloads[0]["attributes"]["controller_evaluated"] == "false"
+    assert decision_payloads[0]["attributes"]["publication_complete"] == "false"
+    assert decision_payloads[-1]["attributes"]["controller_evaluated"] == "true"
+    assert decision_payloads[-1]["attributes"]["publication_complete"] == "true"
+    assert reason_payloads[0]["attributes"]["publication_complete"] == "false"
+    assert reason_payloads[-1]["attributes"]["publication_complete"] == "true"
+
+    normal_by_entity = {entity_id: payload for entity_id, payload in normal_payloads}
+    assert normal_by_entity[module.DIAGNOSTIC_ENTITIES["interval"]]["attributes"]["input_valid"] == "true"
+    assert (
+        normal_by_entity[module.DIAGNOSTIC_ENTITIES["telemetry"]]["attributes"][
+            "physical_measurement_freshness_verified"
+        ]
+        == "false"
+    )
+    export_attributes = normal_by_entity[module.DIAGNOSTIC_ENTITIES["export_authorization"]]["attributes"]
+    assert export_attributes["discharge_allowed"] == "false"
+    assert "source" not in export_attributes
     assert app.published[module.DIAGNOSTIC_ENTITIES["deye_target"]]["state"] == "0.0"
 
     app.http_payloads.clear()
     monkeypatch.setattr(module, "current_target_from_states", lambda *_args, **_kwargs: 1 / 0)
     app._evaluate()
 
-    assert {entity_id for entity_id, _payload in app.http_payloads} == set(module.DIAGNOSTIC_ENTITIES.values())
-    assert all("state" in payload for _entity_id, payload in app.http_payloads)
+    fail_safe_payloads = app.http_payloads
+    assert {entity_id for entity_id, _payload in fail_safe_payloads} == set(module.DIAGNOSTIC_ENTITIES.values())
+    assert all("state" in payload for _entity_id, payload in fail_safe_payloads)
+    assert all(payload["attributes"]["shadow_mode"] == "true" for _entity_id, payload in fail_safe_payloads)
+    assert all(payload["attributes"]["physical_control"] == "false" for _entity_id, payload in fail_safe_payloads)
+    fail_safe_by_entity = {entity_id: payload for entity_id, payload in fail_safe_payloads}
+    assert fail_safe_by_entity[module.DIAGNOSTIC_ENTITIES["decision"]]["attributes"]["controller_evaluated"] == "false"
+    assert fail_safe_by_entity[module.DIAGNOSTIC_ENTITIES["interval"]]["attributes"]["input_valid"] == "false"
+    assert (
+        fail_safe_by_entity[module.DIAGNOSTIC_ENTITIES["export_authorization"]]["attributes"]["discharge_allowed"]
+        == "false"
+    )
     assert app.published[module.DIAGNOSTIC_ENTITIES["reason"]]["state"] == "RUNTIME_ERROR"
 
 
@@ -412,7 +476,7 @@ def test_runtime_recovers_on_next_evaluation(monkeypatch: pytest.MonkeyPatch) ->
     app._evaluate()
 
     assert app.published[module.DIAGNOSTIC_ENTITIES["reason"]]["state"] == "TELEMETRY_MISSING"
-    assert app.published[module.DIAGNOSTIC_ENTITIES["decision"]]["attributes"]["publication_complete"] is True
+    assert app.published[module.DIAGNOSTIC_ENTITIES["decision"]]["attributes"]["publication_complete"] == "true"
 
 
 def test_restart_with_stale_optimizer_data_does_not_reuse_a_decision() -> None:

@@ -87,19 +87,28 @@ class EnergyV3ShadowApp(hass.Hass):
         now: datetime,
     ) -> None:
         target = haeo.target
-        common = {"shadow_mode": True, "physical_control": False, "evaluated_at": now.isoformat()}
+        common = {
+            "shadow_mode": _diagnostic_bool(True),
+            "physical_control": _diagnostic_bool(False),
+            "evaluated_at": now.isoformat(),
+        }
         layers = _diagnostic_layers(haeo, telemetry, decision)
         # A failed partial publication must never leave a positive decision visible.
         self.set_state(
             DIAGNOSTIC_ENTITIES["decision"],
             state="RETURN_TO_NORMAL",
-            attributes={**common, **layers, "controller_evaluated": False, "publication_complete": False},
+            attributes={
+                **common,
+                **layers,
+                "controller_evaluated": _diagnostic_bool(False),
+                "publication_complete": _diagnostic_bool(False),
+            },
             replace=True,
         )
         self.set_state(
             DIAGNOSTIC_ENTITIES["reason"],
             state="DIAGNOSTIC_PUBLICATION_IN_PROGRESS",
-            attributes={**common, **layers, "publication_complete": False},
+            attributes={**common, **layers, "publication_complete": _diagnostic_bool(False)},
             replace=True,
         )
         interval_state = target.timestamp.isoformat() if target else "invalid"
@@ -111,7 +120,7 @@ class EnergyV3ShadowApp(hass.Hass):
                 "valid_until": target.valid_until.isoformat() if target else None,
                 "optimizer_status": haeo.optimizer_status,
                 "optimizer_last_run": haeo.optimizer_last_run.isoformat() if haeo.optimizer_last_run else None,
-                "input_valid": haeo.valid,
+                "input_valid": _diagnostic_bool(haeo.valid),
                 "input_error": haeo.error.value if haeo.error else None,
             },
             replace=True,
@@ -125,7 +134,9 @@ class EnergyV3ShadowApp(hass.Hass):
                 **common,
                 "issues": list(telemetry.issues),
                 "freshness_basis": telemetry.freshness_basis,
-                "physical_measurement_freshness_verified": telemetry.physical_measurement_freshness_verified,
+                "physical_measurement_freshness_verified": _diagnostic_bool(
+                    telemetry.physical_measurement_freshness_verified
+                ),
                 "manual_legacy_control": "observed_not_owned",
                 **telemetry.observed_modes,
             },
@@ -134,14 +145,14 @@ class EnergyV3ShadowApp(hass.Hass):
         self.set_state(
             DIAGNOSTIC_ENTITIES["export_authorization"],
             state="missing",
-            attributes={**common, "discharge_allowed": False, "source": None},
+            attributes={**common, "discharge_allowed": _diagnostic_bool(False), "source": None},
             replace=True,
         )
         reason = decision.reason.value if decision else f"HAEO_{haeo.error.value if haeo.error else 'INVALID'}"
         self.set_state(
             DIAGNOSTIC_ENTITIES["reason"],
             state=reason,
-            attributes={**common, **layers, "publication_complete": True},
+            attributes={**common, **layers, "publication_complete": _diagnostic_bool(True)},
             replace=True,
         )
         self.set_state(
@@ -150,27 +161,33 @@ class EnergyV3ShadowApp(hass.Hass):
             attributes={
                 **common,
                 **layers,
-                "controller_evaluated": decision is not None,
-                "publication_complete": True,
+                "controller_evaluated": _diagnostic_bool(decision is not None),
+                "publication_complete": _diagnostic_bool(True),
             },
             replace=True,
         )
 
     def _publish_runtime_error(self, now: datetime, error_type: str) -> None:
         common = {
-            "shadow_mode": True,
-            "physical_control": False,
+            "shadow_mode": _diagnostic_bool(True),
+            "physical_control": _diagnostic_bool(False),
             "evaluated_at": now.isoformat(),
             "runtime_error_type": error_type,
         }
         values = {
-            "decision": ("RETURN_TO_NORMAL", {**common, "controller_evaluated": False}),
+            "decision": ("RETURN_TO_NORMAL", {**common, "controller_evaluated": _diagnostic_bool(False)}),
             "reason": ("RUNTIME_ERROR", common),
-            "interval": ("invalid", {**common, "input_valid": False, "input_error": "RUNTIME_ERROR"}),
+            "interval": (
+                "invalid",
+                {**common, "input_valid": _diagnostic_bool(False), "input_error": "RUNTIME_ERROR"},
+            ),
             "solax_target": ("unavailable", {**common, "unit_of_measurement": "W", "device_class": "power"}),
             "deye_target": ("unavailable", {**common, "unit_of_measurement": "W", "device_class": "power"}),
             "telemetry": ("runtime_error", common),
-            "export_authorization": ("missing", {**common, "discharge_allowed": False, "source": None}),
+            "export_authorization": (
+                "missing",
+                {**common, "discharge_allowed": _diagnostic_bool(False), "source": None},
+            ),
         }
         for key, (state, attributes) in values.items():
             try:
@@ -193,13 +210,20 @@ def _diagnostic_layers(
     decision: Decision | None,
 ) -> dict[str, Any]:
     return {
-        "haeo_valid": haeo.valid,
+        "haeo_valid": _diagnostic_bool(haeo.valid),
         "telemetry_status": telemetry.status.value,
-        "missing_fault_evidence": any("fault:evidence_missing" in issue for issue in telemetry.issues),
+        "missing_fault_evidence": _diagnostic_bool(
+            any("fault:evidence_missing" in issue for issue in telemetry.issues)
+        ),
         "export_authorization_status": "missing",
         "hardware_capability_status": _capability_status(haeo.target),
         "controller_reason": decision.reason.value if decision else None,
     }
+
+
+def _diagnostic_bool(value: bool) -> str:
+    """Keep both boolean values explicit through AppDaemon's HTTP cleaner."""
+    return "true" if value else "false"
 
 
 def _capability_status(target: CurrentTarget | None) -> str:
