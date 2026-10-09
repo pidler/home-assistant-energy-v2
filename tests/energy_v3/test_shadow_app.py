@@ -4,6 +4,7 @@ import importlib
 import inspect
 import sys
 import types
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -20,11 +21,18 @@ class ShadowStubHass:
         self.run_in_callbacks: dict[object, object] = {}
         self.services: list[object] = []
         self.published: dict[str, dict[str, Any]] = {}
+        self.state_snapshots: list[dict[str, Any]] = []
+        self.get_state_calls: list[str | None] = []
+        self.reject_merged_metadata = False
         self.fail_set_state_once: set[str] = set()
         self.fail_run_in_once = False
 
-    def get_state(self, entity_id: str, **_kwargs: Any) -> Any:
-        return self.states.get(entity_id)
+    def get_state(self, entity_id: str | None = None, **_kwargs: Any) -> Any:
+        self.get_state_calls.append(entity_id)
+        if entity_id is None:
+            source = self.state_snapshots.pop(0) if self.state_snapshots else self.states
+            return deepcopy(source)
+        return deepcopy(self.states.get(entity_id))
 
     def listen_state(self, _callback: object, entity_id: str) -> None:
         self.listeners.append(entity_id)
@@ -42,6 +50,11 @@ class ShadowStubHass:
         if entity_id in self.fail_set_state_once:
             self.fail_set_state_once.remove(entity_id)
             raise RuntimeError("simulated publication failure")
+        if self.reject_merged_metadata and not kwargs.get("replace", False):
+            existing = self.published.get(entity_id, {}).get("attributes", {})
+            merged = {**existing, **kwargs.get("attributes", {})}
+            if {"last_changed", "last_updated", "last_reported", "context"} & merged.keys():
+                raise RuntimeError("simulated Home Assistant HTTP 400")
         self.published[entity_id] = kwargs
 
 
@@ -171,6 +184,37 @@ def test_shadow_publishes_targets_even_when_execution_is_rejected() -> None:
     assert app.services == []
 
 
+def test_runtime_reads_two_atomic_appdaemon_snapshots() -> None:
+    module = import_shadow_app()
+    app = module.EnergyV3ShadowApp()
+    app.args = {}
+    app.states = runtime_states(datetime.now(UTC))
+    app.initialize()
+
+    app._evaluate()
+
+    assert app.get_state_calls == [None, None]
+    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["state"] == 1000
+
+
+def test_haeo_update_between_atomic_snapshots_fails_closed() -> None:
+    module = import_shadow_app()
+    from apps.energy_v3.haeo_adapter import SOLAX_ACTIVE_POWER
+
+    app = module.EnergyV3ShadowApp()
+    app.args = {}
+    before = runtime_states(datetime.now(UTC))
+    after = deepcopy(before)
+    after[SOLAX_ACTIVE_POWER]["attributes"]["forecast"][0]["value"] = 2
+    app.state_snapshots = [before, after]
+    app.initialize()
+
+    app._evaluate()
+
+    assert app.published[module.DIAGNOSTIC_ENTITIES["reason"]]["state"] == "HAEO_PUBLICATION_UNCERTAIN"
+    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["state"] == "unavailable"
+
+
 def test_rapid_updates_are_coalesced() -> None:
     module = import_shadow_app()
     app = module.EnergyV3ShadowApp()
@@ -236,6 +280,30 @@ def test_partial_publication_is_replaced_with_fail_safe_diagnostics() -> None:
     assert app.published[module.DIAGNOSTIC_ENTITIES["decision"]]["state"] == "RETURN_TO_NORMAL"
     assert app.published[module.DIAGNOSTIC_ENTITIES["reason"]]["state"] == "RUNTIME_ERROR"
     assert app.published[module.DIAGNOSTIC_ENTITIES["telemetry"]]["state"] == "runtime_error"
+
+
+def test_diagnostic_publication_replaces_stale_home_assistant_metadata() -> None:
+    module = import_shadow_app()
+    app = module.EnergyV3ShadowApp()
+    app.args = {}
+    app.states = runtime_states(datetime.now(UTC))
+    app.reject_merged_metadata = True
+    app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]] = {
+        "state": "unavailable",
+        "attributes": {
+            "last_changed": "old",
+            "last_updated": "old",
+            "last_reported": "old",
+            "context": {"id": "old"},
+        },
+    }
+    app.initialize()
+
+    app._evaluate()
+
+    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["state"] == 1000
+    assert app.published[module.DIAGNOSTIC_ENTITIES["solax_target"]]["replace"] is True
+    assert all(payload["replace"] is True for payload in app.published.values())
 
 
 def test_runtime_recovers_on_next_evaluation(monkeypatch: pytest.MonkeyPatch) -> None:
