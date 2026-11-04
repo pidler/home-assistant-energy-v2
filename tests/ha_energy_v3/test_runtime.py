@@ -421,3 +421,48 @@ def test_adapter_incomplete_profile_keeps_hold_and_does_not_release(run):
         assert rig.state("input_boolean.energy_v3_fault") == "on"
 
     run(scenario)
+
+
+@pytest.mark.parametrize(
+    "mode, entity, expected",
+    [
+        ("SOLAX_SELL", "number.solax_remotecontrol_push_mode_power_8_9_direct", 2400),
+        ("SOLAX_AC_CHARGE", "number.solax_remotecontrol_push_mode_power_8_9_direct", -2400),
+        ("DEYE_SELL", "number.deye_remote_constant_power_setpoint", 20.4),
+        ("DEYE_AC_CHARGE", "number.deye_remote_constant_power_setpoint", -20.4),
+    ],
+)
+def test_adapter_units_signs_quantize_toward_zero(run, mode, entity, expected):
+    async def scenario(rig):
+        await rig.commissioned()
+        result = await rig.submit(mode, power=2449)
+        assert result["reason"] == "ok"
+        commands = [step for step in result["plan"] if step.get("entity") == entity]
+        assert commands[-1]["value"] == expected
+        assert commands[-1]["unit"] == ("percent" if mode.startswith("DEYE_") else "W_battery")
+        opposite = (
+            "number.deye_battery_max_charging_current"
+            if mode == "DEYE_SELL"
+            else "number.deye_battery_max_discharging_current"
+        )
+        if mode.startswith("DEYE_"):
+            assert all(step["value"] == 0 for step in result["plan"] if step.get("entity") == opposite)
+
+    run(scenario)
+
+
+def test_normalized_pcc_entity_is_signed_and_unavailable_without_its_source(run):
+    async def scenario(rig):
+        assert rig.state("sensor.energy_v3_pcc_export_w") == "unavailable"
+        await rig.commissioned()
+        await rig.hass.async_block_till_done()
+        assert float(rig.state("sensor.energy_v3_pcc_export_w")) == 1000
+        rig.sample("sensor.deye_external_power", 1500)
+        await rig.hass.async_block_till_done()
+        assert float(rig.state("sensor.energy_v3_pcc_export_w")) == -1500
+        rig.sample("sensor.solax_measured_power", 0)
+        rig.sample("sensor.deye_external_power", "unavailable")
+        await rig.hass.async_block_till_done()
+        assert rig.state("sensor.energy_v3_pcc_export_w") == "unavailable"
+
+    run(scenario)
