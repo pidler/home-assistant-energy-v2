@@ -1,0 +1,611 @@
+# ENERGY V3 phase 1: PREVIEW ONLY. No inverter services are executed.
+# Enabled means enable the simulator, never enable a physical transport.
+input_boolean:
+  energy_v3_enabled:
+    name: ENERGY V3 preview enabled
+    initial: false
+  energy_v3_topology_verified:
+    name: ENERGY V3 asymmetric topology physically verified
+    initial: false
+  energy_v3_fault:
+    name: ENERGY V3 preview fault latch
+    initial: false
+
+input_select:
+  energy_v3_topology:
+    name: ENERGY V3 measurement profile
+    options: [current, asymmetric]
+    initial: current
+
+input_text:
+  energy_v3_applied:
+    name: ENERGY V3 simulated applied mode power and lease (not hardware)
+    max: 255
+    initial: '{"m":"UNKNOWN","p":0,"u":0}'
+    # Reset on restart. u is a SIMULATED command deadline, never a HW readback.
+  energy_v3_command:
+    name: ENERGY V3 accepted request and replay watermark
+    max: 255
+    # No initial: preserve the issued-at watermark across HA restarts.
+    # Startup cancels this record; it must never resume a command.
+
+template:
+  - sensor:
+      - name: ENERGY V3 configuration
+        unique_id: energy_v3_configuration
+        default_entity_id: sensor.energy_v3_configuration
+        state: "{{ states('input_select.energy_v3_topology') }}"
+        attributes:
+          profile: >-
+            {{ dict(
+              topology=states('input_select.energy_v3_topology'),
+              pcc_source=('sensor.deye_external_power'
+                if is_state('input_select.energy_v3_topology', 'asymmetric')
+                else 'sensor.solax_measured_power'),
+              pcc_multiplier=none,
+              native_export_verified=false,
+              deye_remote_verified=false,
+              solax_vpp_verified=false,
+              soc_limits_verified=false,
+              communication_verified=false,
+              sample_time_attribute=none,
+              max_sample_age_s=none,
+              solax_healthy_states=[],
+              solax_min_soc=none, solax_max_soc=none,
+              deye_min_soc=none, deye_max_soc=none,
+              solax_max_power_w=none, deye_max_power_w=none,
+              deye_charge_current_a=none, deye_discharge_current_a=none,
+              deye_remote_mode='Remote mode 3',
+              deye_watchdog_s=none,
+              deye_refresh_verified=false, deye_refresh_via=none, deye_renew_before_s=none,
+              solax_duration_s=60, solax_timeout_s=none,
+              solax_refresh_verified=false, solax_renew_before_s=none,
+              solax_pv_limit_w=none,
+              pv_auto_verified=false,
+              pv_auto_work_mode=none, pv_auto_tou=none,
+              export_target_w=9800, export_alarm_w=10000) }}
+      - name: ENERGY V3 request
+        unique_id: energy_v3_request
+        default_entity_id: sensor.energy_v3_request
+        state: >-
+          {% set r = states('input_text.energy_v3_command') | from_json({}) %}
+          {{ r.get('m', 'NONE') if r is mapping else 'INVALID' }}
+        attributes:
+          request: "{{ states('input_text.energy_v3_command') | from_json({}) }}"
+          physical_control: "{{ false }}"
+      - name: ENERGY V3 preview mode
+        unique_id: energy_v3_preview_mode
+        default_entity_id: sensor.energy_v3_preview_mode
+        state: >-
+          {% set a = states('input_text.energy_v3_applied') | from_json({}) %}
+          {{ a.get('m','UNKNOWN') if a is mapping else 'UNKNOWN' }}
+        attributes:
+          simulated_applied: "{{ states('input_text.energy_v3_applied') | from_json({}) }}"
+          hardware_confirmed: "{{ false }}"
+      - name: ENERGY V3 PCC export W
+        unique_id: energy_v3_pcc_export_w
+        default_entity_id: sensor.energy_v3_pcc_export_w
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: >-
+          {% set c = state_attr('sensor.energy_v3_configuration','profile') or {} %}
+          {% if c.get('topology') != 'asymmetric'
+              or not is_state('input_boolean.energy_v3_topology_verified','on')
+              or c.get('pcc_multiplier') is boolean or c.get('pcc_multiplier') not in [-1,1]
+              or c.get('sample_time_attribute') is not string
+              or c.get('max_sample_age_s') is not number %}{{ false }}
+          {% else %}
+            {% set sample = as_timestamp(state_attr(c.pcc_source,c.sample_time_attribute),0) %}
+            {% set age = as_timestamp(now()) - sample %}
+            {{ is_number(states(c.pcc_source)) and sample > 0 and -2 <= age <= c.max_sample_age_s }}
+          {% endif %}
+        state: >-
+          {% set c = state_attr('sensor.energy_v3_configuration','profile') or {} %}
+          {{ states(c.get('pcc_source','sensor.deye_external_power')) | float(none)
+             * c.get('pcc_multiplier') if c.get('pcc_multiplier') in [-1,1]
+             and is_number(states(c.get('pcc_source',''))) else none }}
+  - triggers:
+      - trigger: event
+        event_type: energy_v3_preview_result
+      - trigger: homeassistant
+        event: start
+    sensor:
+      - name: ENERGY V3 status
+        unique_id: energy_v3_status
+        default_entity_id: sensor.energy_v3_status
+        state: DISABLED
+        attributes:
+          physical_control: "{{ false }}"
+          hardware_confirmed: "{{ false }}"
+          fault_reason: >-
+            {% if not is_state('input_boolean.energy_v3_fault','on') %}{{ '' }}
+            {% else %}{{ this.attributes.get('fault_reason') or
+              (trigger.event.data.result.reason if trigger.platform == 'event' else 'startup') }}{% endif %}
+          diagnostic: >-
+            {{ trigger.event.data.result if trigger.platform == 'event'
+               else dict(reason='startup', preview_mode='SAFE', executed=false) }}
+
+script:
+  energy_v3_submit:
+    alias: ENERGY V3 submit (preview only)
+    description: Single-producer API; power_w is a nonnegative battery target in W.
+    mode: queued
+    max: 10
+    fields:
+      mode:
+        required: true
+        selector:
+          select:
+            options: [SAFE, SELF_USE, PV_AUTO, DEYE_SELL, SOLAX_SELL, SOLAX_AC_CHARGE, DEYE_AC_CHARGE]
+      power_w:
+        required: true
+        selector:
+          number: {min: 0, max: 12000, mode: box}
+      issued_at:
+        required: true
+        selector: {text: {}}
+      valid_until:
+        required: true
+        selector: {text: {}}
+      command_id:
+        required: true
+        selector: {text: {}}
+    sequence:
+      - variables:
+          raw_prior: "{{ states('input_text.energy_v3_command') }}"
+          prior: "{{ {} if raw_prior in ['', 'unknown'] else raw_prior | from_json(none) }}"
+          issued: "{{ as_timestamp(issued_at | default(none), 0) }}"
+          expiry: "{{ as_timestamp(valid_until | default(none), 0) }}"
+          incoming: >-
+            {{ dict(i=command_id | default(''), m=mode | default(''),
+              p=power_w | default(none), t=issued, e=expiry, x=false) }}
+          validation_error: >-
+            {% set n = as_timestamp(now()) %}
+            {% if mode | default('') not in ['SAFE','SELF_USE','PV_AUTO','DEYE_SELL',
+                'SOLAX_SELL','SOLAX_AC_CHARGE','DEYE_AC_CHARGE'] %}invalid_mode
+            {% elif power_w is not defined or power_w is not number or power_w is boolean
+                or not (0 <= power_w <= 12000) %}invalid_power
+            {% elif mode in ['SAFE','SELF_USE','PV_AUTO'] and power_w != 0 %}unexpected_power
+            {% elif mode not in ['SAFE','SELF_USE','PV_AUTO'] and
+                power_w < (100 if mode in ['SOLAX_SELL','SOLAX_AC_CHARGE'] else 12) %}power_below_step
+            {% elif command_id is not defined or command_id is not string
+                or not (command_id | regex_match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,47}$')) %}invalid_id
+            {% elif issued_at is not defined or valid_until is not defined
+                or issued_at is not string or valid_until is not string
+                or not (issued_at | regex_search('(Z|[+-][0-9]{2}:[0-9]{2})$'))
+                or not (valid_until | regex_search('(Z|[+-][0-9]{2}:[0-9]{2})$'))
+                or issued <= 0 or expiry <= 0 %}invalid_time
+            {% elif issued > n + 2 %}future_command
+            {% elif expiry <= n or expiry <= issued %}expired_command
+            {% elif expiry - issued > 120 %}ttl_too_long
+            {% elif prior is not mapping %}corrupt_watermark
+            {% elif prior and (prior.get('i') is not string
+                or prior.get('t') is not number or prior.get('t') is boolean
+                or prior.get('e') is not number or prior.get('e') is boolean
+                or not (0 < prior.t < prior.e <= prior.t + 120)) %}corrupt_watermark
+            {% elif prior.get('i') == command_id and prior.get('x', false) %}cancelled_replay
+            {% elif prior.get('i') == command_id and prior != incoming %}id_conflict
+            {% elif prior.get('i') != command_id and issued <= prior.get('t', 0) %}old_command
+            {% elif (incoming | to_json | length) > 255 %}request_too_long
+            {% else %}ok{% endif %}
+      - if: "{{ validation_error != 'ok' }}"
+        then:
+          - variables:
+              result: "{{ dict(accepted=false, reason=validation_error, executed=false) }}"
+          - event: energy_v3_preview_result
+            event_data:
+              result: "{{ result }}"
+          - stop: Request rejected without changing the accepted record
+            response_variable: result
+      - if: "{{ prior == incoming }}"
+        then:
+          - variables:
+              result: "{{ dict(accepted=true, reason='duplicate_no_renewal', executed=false) }}"
+          - stop: Idempotent retry does not extend expiry or run adapters
+            response_variable: result
+      - action: input_text.set_value
+        target: {entity_id: input_text.energy_v3_command}
+        data:
+          value: "{{ incoming | to_json }}"
+      - action: script.energy_v3_reconcile
+        response_variable: result
+      - stop: Request processed by the preview coordinator
+        response_variable: result
+
+  energy_v3_reconcile:
+    alias: ENERGY V3 reconcile (preview only)
+    description: Serial owner of proposed transitions. Never claims hardware is applied.
+    mode: queued
+    max: 10
+    sequence:
+      - variables:
+          cfg: "{{ state_attr('sensor.energy_v3_configuration', 'profile') or {} }}"
+          raw_request: "{{ states('input_text.energy_v3_command') }}"
+          r: "{{ {} if raw_request in ['', 'unknown'] else raw_request | from_json(none) }}"
+          applied: "{{ states('input_text.energy_v3_applied') | from_json({}) }}"
+          applied_valid: >-
+            {{ applied is mapping and applied.get('m') in ['UNKNOWN','SAFE','SELF_USE','PV_AUTO',
+              'DEYE_SELL','SOLAX_SELL','SOLAX_AC_CHARGE','DEYE_AC_CHARGE']
+              and applied.get('p') is number and applied.get('p') is not boolean
+              and 0 <= applied.p <= 12000 and applied.get('u') is number
+              and applied.get('u') is not boolean and 0 <= applied.u < 1e12 }}
+          previous: "{{ applied.m if applied_valid else 'UNKNOWN' }}"
+          requested: "{{ r.get('m', 'SAFE') if r is mapping else 'SAFE' }}"
+          power: "{{ r.get('p', 0) if r is mapping else 0 }}"
+          block: >-
+            {% set n = as_timestamp(now()) %}
+            {% set trades = ['DEYE_SELL','SOLAX_SELL','SOLAX_AC_CHARGE','DEYE_AC_CHARGE'] %}
+            {% if not applied_valid %}invalid_simulated_state
+            {% elif not is_state('input_boolean.energy_v3_enabled','on') %}disabled
+            {% elif r is not mapping %}invalid_stored_request
+            {% elif not r %}no_request
+            {% elif r.get('x', false) %}cancelled
+            {% elif requested not in ['SAFE','SELF_USE','PV_AUTO'] + trades
+                or r.get('p') is not number or r.get('p') is boolean
+                or not (0 <= power <= 12000)
+                or r.get('t') is not number or r.get('e') is not number
+                or not (0 < r.t < r.e <= r.t + 120)
+                or r.t > n + 2
+                or (requested in ['SAFE','SELF_USE','PV_AUTO'] and power != 0)
+                or (requested in trades and power < (100 if requested in ['SOLAX_SELL','SOLAX_AC_CHARGE'] else 12)) %}invalid_stored_request
+            {% elif r.e <= n %}expired
+            {% elif requested == 'SAFE' %}ok
+            {% elif is_state('input_boolean.energy_v3_fault','on') %}fault_latched
+            {% elif requested == 'SELF_USE' and power == 0 %}ok
+            {% elif cfg.get('topology') != 'asymmetric' %}current_topology
+            {% elif not is_state('input_boolean.energy_v3_topology_verified','on') %}topology_unverified
+            {% elif not cfg.get('native_export_verified', false) %}native_export_unverified
+            {% elif not cfg.get('communication_verified', false) %}communication_unverified
+            {% elif not cfg.get('soc_limits_verified', false) %}soc_limits_unverified
+            {% elif not cfg.get('deye_remote_verified', false) %}deye_remote_unverified
+            {% elif not cfg.get('solax_vpp_verified', false) %}solax_vpp_unverified
+            {% elif cfg.get('pcc_multiplier') is boolean or cfg.get('pcc_multiplier') not in [-1,1] %}pcc_polarity_unverified
+            {% elif cfg.get('sample_time_attribute') is not string
+                or cfg.get('max_sample_age_s') is not number
+                or not (0 < cfg.max_sample_age_s <= 120) %}sample_clock_unverified
+            {% elif not is_state('binary_sensor.deye_connection','on')
+                or not is_state('sensor.deye_device_fault','OK')
+                or states('sensor.solax_run_mode') not in cfg.get('solax_healthy_states',[]) %}device_unhealthy
+            {% else %}
+              {% set ns = namespace(reason='ok') %}
+              {% for entity in [cfg.get('pcc_source',''), 'sensor.solax_battery_capacity',
+                  'sensor.deye_battery','sensor.solax_battery_power_charge','sensor.deye_battery_power'] %}
+                {% set sample = as_timestamp(state_attr(entity, cfg.sample_time_attribute), 0) %}
+                {% if not is_number(states(entity)) %}{% set ns.reason = 'telemetry_unavailable' %}
+                {% elif sample <= 0 or sample > n + 2 or n - sample > cfg.max_sample_age_s %}
+                  {% set ns.reason = 'telemetry_stale' %}
+                {% endif %}
+              {% endfor %}
+              {% if ns.reason != 'ok' %}{{ ns.reason }}
+              {% elif not (0 <= states('sensor.solax_battery_capacity') | float <= 100)
+                  or not (0 <= states('sensor.deye_battery') | float <= 100) %}invalid_soc
+              {% elif states(cfg.pcc_source) | float * cfg.pcc_multiplier > cfg.export_alarm_w %}export_alarm
+              {% elif cfg.get('solax_min_soc') is not number or cfg.get('solax_max_soc') is not number
+                  or cfg.get('deye_min_soc') is not number or cfg.get('deye_max_soc') is not number
+                  or not (0 <= cfg.solax_min_soc < cfg.solax_max_soc <= 100)
+                  or not (0 <= cfg.deye_min_soc < cfg.deye_max_soc <= 100) %}invalid_soc_limits
+              {% elif requested == 'SOLAX_SELL' and states('sensor.solax_battery_capacity') | float <= cfg.solax_min_soc %}solax_soc_floor
+              {% elif requested == 'SOLAX_AC_CHARGE' and states('sensor.solax_battery_capacity') | float >= cfg.solax_max_soc %}solax_soc_ceiling
+              {% elif requested == 'DEYE_SELL' and states('sensor.deye_battery') | float <= cfg.deye_min_soc %}deye_soc_floor
+              {% elif requested == 'DEYE_AC_CHARGE' and states('sensor.deye_battery') | float >= cfg.deye_max_soc %}deye_soc_ceiling
+              {% elif requested in ['SOLAX_SELL','SOLAX_AC_CHARGE'] and
+                  (cfg.get('solax_max_power_w') is not number or not (0 < power <= cfg.solax_max_power_w <= 12000)) %}solax_power_limit
+              {% elif requested in ['DEYE_SELL','DEYE_AC_CHARGE'] and
+                  (cfg.get('deye_max_power_w') is not number or not (0 < power <= cfg.deye_max_power_w <= 12000)) %}deye_power_limit
+              {% elif requested == 'PV_AUTO' and (power != 0 or not cfg.get('pv_auto_verified',false)) %}pv_auto_unverified
+              {% else %}ok{% endif %}
+            {% endif %}
+      - variables:
+          effective_power: >-
+            {% set step = 100 if requested in ['SOLAX_SELL','SOLAX_AC_CHARGE'] else 12 %}
+            {{ ((power / step) | int * step) if power is number and power is not boolean else 0 }}
+          trade_mode: "{{ requested in ['SOLAX_SELL','SOLAX_AC_CHARGE','DEYE_SELL','DEYE_AC_CHARGE'] }}"
+          timing_block: >-
+            {% if block != 'ok' %}{{ block }}
+            {% elif trade_mode and previous == requested and applied.u <= as_timestamp(now()) %}simulated_hw_lease_elapsed
+            {% elif trade_mode and previous == requested and applied.u > r.e %}shortened_lease
+            {% else %}ok{% endif %}
+          block: "{{ timing_block }}"
+      - if: "{{ block not in ['ok','disabled','no_request','cancelled','fault_latched'] and not is_state('input_boolean.energy_v3_fault','on') }}"
+        then:
+          - action: input_boolean.turn_on
+            target: {entity_id: input_boolean.energy_v3_fault}
+      - variables:
+          target_mode: "{{ requested if block == 'ok' else 'SAFE' }}"
+          is_solax: "{{ target_mode in ['SOLAX_SELL','SOLAX_AC_CHARGE'] }}"
+          span: >-
+            {{ (cfg.get('solax_duration_s',0) | float(0) + cfg.get('solax_timeout_s',0) | float(0))
+               if is_solax else cfg.get('deye_watchdog_s',0) | float(0) }}
+          margin: "{{ cfg.get('solax_renew_before_s') if is_solax else cfg.get('deye_renew_before_s') }}"
+          refresh_verified: "{{ cfg.get('solax_refresh_verified',false) if is_solax else cfg.get('deye_refresh_verified',false) }}"
+          renewal_due: >-
+            {{ block == 'ok' and trade_mode and previous == target_mode and margin is number
+               and margin is not boolean and 0 < margin < span
+               and as_timestamp(now()) >= applied.u - margin }}
+          change: >-
+            {% if previous != target_mode %}transition
+            {% elif block == 'ok' and effective_power != applied.p %}setpoint
+            {% elif renewal_due and refresh_verified and as_timestamp(now()) + span <= r.e %}renew
+            {% else %}check{% endif %}
+          check_reason: >-
+            {% if block != 'ok' %}{{ block }}
+            {% elif renewal_due and not refresh_verified %}renewal_unverified
+            {% elif renewal_due and as_timestamp(now()) + span > r.e %}renewal_waiting_for_longer_lease
+            {% else %}ok{% endif %}
+          renew_with_setpoint: >-
+            {{ change == 'setpoint' and renewal_due and refresh_verified and as_timestamp(now()) + span <= r.e }}
+          plan: []
+          operation: "{{ dict(ready=true, steps=[], lease_s=0) }}"
+      - choose:
+          - conditions: "{{ change != 'check' and is_solax }}"
+            sequence:
+              - action: script.energy_v3_apply_solax
+                data:
+                  mode: "{{ target_mode }}"
+                  power_w: "{{ effective_power }}"
+                  change: "{{ change }}"
+                  renew: "{{ renew_with_setpoint }}"
+                response_variable: operation
+          - conditions: "{{ change != 'check' and target_mode in ['PV_AUTO','DEYE_SELL','DEYE_AC_CHARGE'] }}"
+            sequence:
+              - action: script.energy_v3_apply_deye
+                data:
+                  mode: "{{ target_mode }}"
+                  power_w: "{{ effective_power }}"
+                  change: "{{ change }}"
+                  renew: "{{ renew_with_setpoint }}"
+                response_variable: operation
+      - if: "{{ not operation.ready }}"
+        then:
+          - variables:
+              target_mode: SAFE
+              block: "{{ operation.reason }}"
+              check_reason: "{{ operation.reason }}"
+              change: "{{ 'check' if previous == 'SAFE' else 'transition' }}"
+              operation: "{{ dict(ready=true, steps=[], lease_s=0) }}"
+          - action: input_boolean.turn_on
+            target: {entity_id: input_boolean.energy_v3_fault}
+      - if: "{{ change == 'transition' }}"
+        then:
+          # Full break-before-make ONLY for a different mode (including one SAFE exit).
+          - action: script.energy_v3_apply_deye
+            data: {mode: HOLD, power_w: 0}
+            response_variable: hold
+          - action: script.energy_v3_apply_solax
+            data: {mode: SAFE, power_w: 0}
+            response_variable: sx_stop
+          - variables:
+              plan: "{{ hold.steps + sx_stop.steps }}"
+      - variables:
+          next_applied: >-
+            {{ dict(m=target_mode, p=(effective_power if block == 'ok' else 0),
+              u=(as_timestamp(now()) + operation.lease_s if operation.lease_s > 0
+                 else (applied.u if applied_valid and target_mode == previous else 0))) }}
+          # No physical instruction is executed, even with every gate enabled.
+          result: >-
+            {{ dict(accepted=true, reason=check_reason, requested_mode=requested,
+              previous_preview_mode=previous, preview_mode=target_mode,
+              requested_power_w=power, simulated_applied=(applied if change == 'check' else next_applied),
+              change=change,
+              renewal_prepared=(change in ['setpoint','renew'] and operation.lease_s > 0),
+              command_id=(r.get('i','') if r is mapping else ''),
+              plan=(plan + operation.steps if block == 'ok' else plan),
+              hw_readback=dict(solax_vpp=states('sensor.solax_modbus_power_control'),
+                deye_remote_observed=states('select.deye_remote_mode'),
+                deye_battery_w=states('sensor.deye_battery_power'),
+                solax_battery_w=states('sensor.solax_battery_power_charge')),
+              executed=false, hardware_confirmed=false, actual_mode='DISABLED') }}
+      - if: "{{ change != 'check' }}"
+        then:
+          - action: input_text.set_value
+            target: {entity_id: input_text.energy_v3_applied}
+            data:
+              value: "{{ next_applied | to_json }}"
+      - event: energy_v3_preview_result
+        event_data:
+          result: "{{ result }}"
+      - stop: Preview result only; no device command was sent
+        response_variable: result
+
+  energy_v3_apply_solax:
+    alias: ENERGY V3 prepare SolaX plan (no transport)
+    mode: queued
+    max: 10
+    sequence:
+      - variables:
+          cfg: "{{ state_attr('sensor.energy_v3_configuration','profile') or {} }}"
+          preparation: >-
+            {% if mode | default('') == 'SAFE' %}
+              {{ dict(ready=true, steps=[
+                dict(device='solax', entity='select.solax_modbus_power_control_direct', value='Disabled'),
+                dict(device='solax', barrier='confirm_vpp_disabled_and_battery_idle'),
+                dict(device='solax', entity='select.solax_charger_use_mode', value='Self Use Mode'),
+                dict(device='solax', barrier='confirm_native_self_use')]) }}
+            {% elif mode | default('') not in ['SOLAX_SELL','SOLAX_AC_CHARGE']
+                or change | default('transition') not in ['transition','setpoint','renew']
+                or power_w | default(none) is not number or power_w is boolean
+                or not (100 <= power_w <= 12000) %}
+              {{ dict(ready=false, reason='invalid_solax_adapter_request', steps=[]) }}
+            {% elif not cfg.get('solax_vpp_verified',false)
+                or cfg.get('solax_timeout_s') is not number
+                or cfg.get('solax_pv_limit_w') is not number
+                or cfg.get('solax_duration_s') != 60
+                or not (0 <= cfg.solax_timeout_s <= 120 and cfg.solax_timeout_s % 60 == 0)
+                or not (0 < cfg.solax_pv_limit_w <= 30000) %}
+              {{ dict(ready=false, reason='solax_profile_incomplete', steps=[]) }}
+            {% elif (states('input_text.energy_v3_command') | from_json({})).get('e',0)
+                - as_timestamp(now()) < cfg.solax_duration_s + cfg.solax_timeout_s %}
+              {{ dict(ready=false, reason='insufficient_solax_lease', steps=[]) }}
+            {% elif change | default('transition') == 'renew' and not cfg.get('solax_refresh_verified',false) %}
+              {{ dict(ready=false, reason='solax_refresh_unverified', steps=[]) }}
+            {% elif change | default('transition') in ['setpoint','renew'] %}
+              {% set signed = ((power_w / 100) | int * 100) * (1 if mode == 'SOLAX_SELL' else -1) %}
+              {{ dict(ready=true,
+                lease_s=(cfg.solax_duration_s + cfg.solax_timeout_s if cfg.get('solax_refresh_verified',false) else 0),
+                steps=[dict(device='solax', barrier='confirm_existing_mode8_and_deye_hold'),
+                  (dict(device='solax', entity='number.solax_remotecontrol_push_mode_power_8_9_direct',
+                    value=signed, unit='W_battery') if change == 'setpoint' else
+                   dict(device='solax', entity='select.solax_modbus_power_control_direct',
+                    value='Individual Setting - Duration Mode')),
+                  dict(device='solax', barrier='confirm_mode8_battery_and_ac_power')]) }}
+            {% else %}
+              {% set signed = ((power_w / 100) | int * 100) * (1 if mode == 'SOLAX_SELL' else -1) %}
+              {{ dict(ready=true, lease_s=cfg.solax_duration_s + cfg.solax_timeout_s, steps=[
+                dict(device='solax', barrier='confirm_deye_hold_for_entire_vpp_lease'),
+                dict(device='solax', entity='select.solax_power_control_mode_target_set_type_direct', value='Set'),
+                dict(device='solax', entity='number.solax_remotecontrol_pv_power_limit_direct', value=cfg.solax_pv_limit_w),
+                dict(device='solax', entity='number.solax_remotecontrol_push_mode_power_8_9_direct', value=signed, unit='W_battery'),
+                dict(device='solax', entity='number.solax_remotecontrol_duration_8_direct', value=60),
+                dict(device='solax', entity='number.solax_remotecontrol_timeout_8_9_direct', value=cfg.solax_timeout_s),
+                dict(device='solax', entity='select.solax_modbus_power_control_direct', value='Individual Setting - Duration Mode'),
+                dict(device='solax', barrier='confirm_mode8_battery_and_ac_power')]) }}
+            {% endif %}
+      - stop: Prepared data only
+        response_variable: preparation
+
+  energy_v3_apply_deye:
+    alias: ENERGY V3 prepare Deye plan (no transport)
+    mode: queued
+    max: 10
+    sequence:
+      - variables:
+          cfg: "{{ state_attr('sensor.energy_v3_configuration','profile') or {} }}"
+          preparation: >-
+            {% if mode | default('') == 'HOLD' %}
+              {{ dict(ready=true, steps=[
+                dict(device='deye', entity='number.deye_remote_constant_power_setpoint', value=0, unit='percent'),
+                dict(device='deye', entity='number.deye_battery_max_charging_current', value=0, unit='A'),
+                dict(device='deye', entity='number.deye_battery_max_discharging_current', value=0, unit='A'),
+                dict(device='deye', barrier='confirm_both_zero_limits_and_battery_idle'),
+                dict(device='deye', entity='select.deye_remote_mode', value='Disabled'),
+                dict(device='deye', barrier='confirm_native_hold')]) }}
+            {% elif mode | default('') not in ['PV_AUTO','DEYE_SELL','DEYE_AC_CHARGE']
+                or change | default('transition') not in ['transition','setpoint','renew']
+                or power_w | default(none) is not number or power_w is boolean
+                or not (0 <= power_w <= 12000)
+                or (mode == 'PV_AUTO' and power_w != 0)
+                or (mode != 'PV_AUTO' and power_w < 12) %}
+              {{ dict(ready=false, reason='invalid_deye_adapter_request', steps=[]) }}
+            {% elif cfg.get('deye_charge_current_a') is not number
+                or cfg.get('deye_discharge_current_a') is not number
+                or not (0 < cfg.deye_charge_current_a <= 350)
+                or not (0 < cfg.deye_discharge_current_a <= 350) %}
+              {{ dict(ready=false, reason='deye_current_limits_unverified', steps=[]) }}
+            {% elif mode == 'PV_AUTO' %}
+              {% if not cfg.get('pv_auto_verified', false)
+                  or cfg.get('pv_auto_work_mode') not in ['Export First','Zero Export To CT']
+                  or cfg.get('pv_auto_tou') not in ['Enabled','Disabled'] %}
+                {{ dict(ready=false, reason='pv_auto_profile_incomplete', steps=[]) }}
+              {% else %}
+                {{ dict(ready=true, lease_s=0, steps=[
+                  dict(device='deye', barrier='confirm_solax_vpp_finished_before_releasing_hold'),
+                  dict(device='deye', entity='select.deye_remote_mode', value='Disabled'),
+                  dict(device='deye', entity='switch.deye_battery_grid_charging', value=false),
+                  dict(device='deye', entity='select.deye_work_mode', value=cfg.pv_auto_work_mode),
+                  dict(device='deye', entity='select.deye_time_of_use', value=cfg.pv_auto_tou),
+                  dict(device='deye', entity='switch.deye_export_surplus', value=false),
+                  dict(device='deye', entity='select.deye_ac_coupling', value='Grid'),
+                  dict(device='deye', entity='number.deye_battery_max_discharging_current', value=0),
+                  dict(device='deye', entity='number.deye_battery_max_charging_current', value=cfg.deye_charge_current_a),
+                  dict(device='deye', barrier='confirm_surplus_only_charge_no_discharge')]) }}
+              {% endif %}
+            {% elif not cfg.get('deye_remote_verified',false)
+                or cfg.get('deye_watchdog_s') is not number
+                or not (10 <= cfg.deye_watchdog_s <= 18000)
+                or cfg.get('deye_remote_mode') not in ['Remote mode 1','Remote mode 2','Remote mode 3'] %}
+              {{ dict(ready=false, reason='deye_remote_profile_incomplete', steps=[]) }}
+            {% elif (states('input_text.energy_v3_command') | from_json({})).get('e',0)
+                - as_timestamp(now()) < cfg.deye_watchdog_s %}
+              {{ dict(ready=false, reason='insufficient_deye_lease', steps=[]) }}
+            {% elif change | default('transition') == 'renew' and
+                (not cfg.get('deye_refresh_verified',false) or cfg.get('deye_refresh_via') not in ['watchdog','setpoint']) %}
+              {{ dict(ready=false, reason='deye_refresh_unverified', steps=[]) }}
+            {% elif change | default('transition') in ['setpoint','renew'] %}
+              {% set pct = ((power_w / 12) | int / 10) * (1 if mode == 'DEYE_SELL' else -1) %}
+              {{ dict(ready=true,
+                lease_s=(cfg.deye_watchdog_s if cfg.get('deye_refresh_verified',false)
+                  and (change == 'renew' or cfg.get('deye_refresh_via') == 'setpoint'
+                    or (renew | default(false) and cfg.get('deye_refresh_via') == 'watchdog')) else 0),
+                steps=[dict(device='deye', barrier='confirm_existing_remote_and_directional_limits'),
+                  (dict(device='deye', entity='number.deye_remote_watchdog', value=cfg.deye_watchdog_s)
+                    if change == 'renew' and cfg.get('deye_refresh_via') == 'watchdog' else
+                   dict(device='deye', entity='number.deye_remote_constant_power_setpoint', value=pct, unit='percent')),
+                  ] + ([dict(device='deye', entity='number.deye_remote_watchdog', value=cfg.deye_watchdog_s)]
+                    if change == 'setpoint' and renew | default(false) and cfg.get('deye_refresh_verified',false)
+                    and cfg.get('deye_refresh_via') == 'watchdog' else [])
+                  + [dict(device='deye', barrier='confirm_battery_direction_soc_and_pcc')]) }}
+            {% else %}
+              {% set pct = ((power_w / 12) | int / 10) * (1 if mode == 'DEYE_SELL' else -1) %}
+              {{ dict(ready=true, lease_s=cfg.deye_watchdog_s, steps=[
+                dict(device='deye', barrier='confirm_solax_self_use_and_no_vpp'),
+                dict(device='deye', entity='select.deye_remote_power_control_mode', value='Battery-side control'),
+                dict(device='deye', entity='select.deye_remote_battery_side_control_strategy', value='Power'),
+                dict(device='deye', entity='number.deye_remote_constant_power_setpoint', value=0, unit='percent'),
+                dict(device='deye', entity='number.deye_remote_watchdog', value=cfg.deye_watchdog_s),
+                dict(device='deye', entity='select.deye_remote_mode', value=cfg.deye_remote_mode),
+                dict(device='deye', barrier='confirm_remote_zero_and_watchdog'),
+                dict(device='deye', entity='number.deye_battery_max_charging_current',
+                  value=(0 if mode == 'DEYE_SELL' else cfg.deye_charge_current_a)),
+                dict(device='deye', entity='number.deye_battery_max_discharging_current',
+                  value=(cfg.deye_discharge_current_a if mode == 'DEYE_SELL' else 0)),
+                dict(device='deye', entity='number.deye_remote_constant_power_setpoint', value=pct, unit='percent'),
+                dict(device='deye', barrier='confirm_battery_direction_soc_and_pcc')]) }}
+            {% endif %}
+      - stop: Prepared data only
+        response_variable: preparation
+
+automation:
+  - id: energy_v3_supervisor
+    alias: ENERGY V3 supervisor (preview only)
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: homeassistant
+        event: start
+        id: startup
+      - trigger: state
+        entity_id:
+          - input_boolean.energy_v3_enabled
+          - input_boolean.energy_v3_topology_verified
+          - input_select.energy_v3_topology
+      - trigger: time_pattern
+        seconds: /20
+    actions:
+      - if: "{{ trigger.id | default('') == 'startup' }}"
+        then:
+          - action: input_boolean.turn_off
+            target: {entity_id: input_boolean.energy_v3_enabled}
+          - variables:
+              prior: "{{ states('input_text.energy_v3_command') | from_json({}) }}"
+          - if: "{{ prior is mapping and prior.get('i', '') != '' }}"
+            then:
+              - action: input_text.set_value
+                target: {entity_id: input_text.energy_v3_command}
+                data:
+                  value: "{{ dict(prior, x=true) | to_json }}"
+      - action: script.energy_v3_reconcile
+
+  - id: energy_v3_safety
+    alias: ENERGY V3 safety (preview only)
+    mode: single
+    triggers:
+      - trigger: time_pattern
+        seconds: /5
+      - trigger: state
+        entity_id:
+          - binary_sensor.deye_connection
+          - sensor.deye_device_fault
+          - sensor.solax_run_mode
+          - sensor.solax_battery_capacity
+          - sensor.deye_battery
+          - sensor.solax_measured_power
+          - sensor.deye_external_power
+    conditions:
+      - condition: state
+        entity_id: input_boolean.energy_v3_enabled
+        state: "on"
+    actions:
+      # The same serial coordinator checks expiry, samples, SOC and fault latch.
+      # No second writer, watchdog reset, or physical emergency-stop service.
+      - action: script.energy_v3_reconcile

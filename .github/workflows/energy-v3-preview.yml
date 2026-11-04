@@ -1,0 +1,31 @@
+name: energy-v3-preview
+
+on:
+  push:
+    paths:
+      - homeassistant/packages/energy_v3.yaml
+      - tests/ha_energy_v3/**
+      - tests/test_energy_v3_package.py
+      - .github/workflows/energy-v3-preview.yml
+  pull_request:
+    paths:
+      - homeassistant/packages/energy_v3.yaml
+      - tests/ha_energy_v3/**
+      - tests/test_energy_v3_package.py
+      - .github/workflows/energy-v3-preview.yml
+
+permissions:
+  contents: read
+
+jobs:
+  home-assistant-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install pinned HA and test tools
+        run: python -m pip install homeassistant==2026.10.4 pytest==8.4.2
+      - name: Validate and execute preview YAML with real HA
+        run: python -m pytest tests/test_energy_v3_package.py tests/ha_energy_v3 -q
