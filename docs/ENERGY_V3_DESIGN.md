@@ -1,267 +1,429 @@
-# ENERGY V3 — jednoduché HA řízení s asymetrickým měřením
+# ENERGY V3 — dokončení technického auditu PR #29
 
-Stav: návrh k revizi, 2026-11-04. Žádný runtime ani fyzický příkaz se tímto PR nenasazuje.
-Audit main: tree 98e76aeab0fc692d70f532b36613ee8d2a82afda.
-Zařízení: SolaX X3-HYBRID-12.0-D G4.2 a Deye SUN-12K-SG05LP3-EU (uživatelem dříve upřesněno SM2).
-Fyzické přepojení měření dosud neproběhlo. Návrh nesmí být aktivován pod současnou topologií.
+Stav: návrh po read-only auditu **2026-11-04**, BLOCKED_FOR_ACTIVATION.
+Repo baseline: `688cb6b32dc242f35275720c64955cd4f866e85a`, větev `codex/energy-v3-simple-design`.
+Mění se pouze tento dokument. Žádné nastavení, registr, automatizace ani fyzické zapojení nebyly změněny.
 
-## 1. Rozhodnutí a důkazní hranice
+Zařízení: SolaX X3-HYBRID-12.0-D G4.2, Deye SUN-12K-SG05LP3-EU; dřívější návrh uvádí SM2, přesný štítek a MAIN/HMI firmware znovu potvrdit.
+Každý má vlastní baterii, oba používají GRID port. Přesun SolaX CT dosud neproběhl.
 
-Použít samostatný optimalizátor → úzké požadavkové rozhraní → HA skripty/automatizace → existující integrace.
-SolaX řídí svou zónu autonomně. Deye zachytává zbytkové přebytky a provádí obchodní operace.
-Nepřenášet LP planner, allocator ani obecný transakční executor do nového runtime.
+## 1. Výsledek a síla důkazů
 
-**Uživatelem prakticky potvrzeno:** Deye nabíjí z externích AC přebytků přes GRID; existuje více funkčních způsobů zákazu nabíjení/vybíjení. Audit to respektuje. Není však znám přesný ověřený postup, firmware, latence a restart/timeout chování každého způsobu.
+ENERGY V3 má **koordinovat režimy**, regulaci výkonu ponechat střídačům.
+Architektura zůstává **optimalizátor → čtyři HA skripty / dvě automatizace → integrace → střídače**.
+Žádný Python controller, allocator, LP planner ani průběžný HA exportní regulátor.
 
-**Přímo přečteno z produkce přes read-only SSH:** HA Core 2026.10.4; filtrovaný registr entit; /config/packages/energy_v3.yaml; definice Remote Control v custom_components/solarman/inverter_definitions/deye_p3.yaml; relevantní části custom_components/solax_modbus/plugin_solax.py a services.yaml Solarman. Registrovaná entita není důkaz dostupného aktuálního HW readbacku.
+Značení závěrů platí v celém dokumentu:
 
-**Neověřeno v tomto auditu:** živé stavy, service registry za běhu, firmware MAIN/HMI, naměřené reakční časy, zápisová persistence, watchdog fallback, fyzická polarita PCC a aktuální stav všech konfliktních writerů. Přímý GET HA API přes existující prostředí SSH add-onu vracel 401. HA MCP home_assistant_chalupa uvedený v AGENTS.md není mezi dostupnými nástroji této relace. Nebyly hledány jiné credentials ani volány ovládací služby. Soubor core.restore_state obsahoval z filtrovaných remote entit jen historický stav trigger buttonu; nelze jej vydávat za živou telemetrii.
+| Značka | Význam a hranice důkazu |
+|---|---|
+| **DOK** | Potvrzené z uvedené dokumentace; neprokazuje chování konkrétního firmware |
+| **KÓD** | Potvrzené z právě přečteného instalovaného kódu / konfigurace; neznamená úspěšný provozní test |
+| **UŽIVATEL** | Prakticky ověřené uživatelem v této instalaci |
+| **DEDUKCE** | Technický závěr z bilance nebo doložených vlastností |
+| **NEOVĚŘENO** | Předpoklad či otevřená vlastnost vyžadující uvedený test |
 
-Produkce již obsahuje **preview-only ENERGY V3 REVIZE 2 z 2026-10-10**, s script.energy_v3_request a eventem energy_v3_request. Nové rozhraní proto používá jiná jména; starý package se při budoucí migraci archivuje a nesmí vedle nového provádět řízení.
+Rozhodnutí:
 
-## 2. Fyzická topologie a bilance
+- **UŽIVATEL:** Deye umí nabíjet z AC přebytků SolaXu přes GRID i bez běžného síťového nabíjení. Tuto schopnost znovu nedokazujeme.
+- **UŽIVATEL, upřesnění v této relaci:** omezení nabíjecího proudu na 0 i vybíjecího proudu na 0 funguje. **Výchozí spolehlivý HOLD bude oba proudové limity = 0**, pouze na přechodech. Přesná priorita vůči Remote Mode, restart a persistence ještě nejsou doloženy.
+- **KÓD / NEOVĚŘENO:** Remote mode 3 + Battery-side + Power + 1109 = 0 existuje v produkčních testovacích skriptech; jeho rovnocennost k obousměrnému HOLD není tím potvrzena. Je to kandidát pro pozdější zjednodušení.
+- **DOK / KÓD:** preferovaná SolaX cesta je **direct VPP mode 8, bateriový cíl + konečná doba**, bez autorepeat smyčky integrace. Přesné timeout/restart chování a priorita exportního limitu při VPP zůstávají akceptačním testem.
+- **NEOVĚŘENO:** dvě hodnoty 9800 W samy nejsou důkazem společného PCC limitu. U Deye chybí důkaz, že Max Sell Power zahrne externí SolaX i při 1109. **Nenahrazujeme tento chybějící důkaz HA regulátorem.**
+- **NEOVĚŘENO:** fyzická polarita PCC není uzavřena. Živé HA API vrací 401; žádná historická hodnota není vydávána za živé měření.
 
-Schéma je funkční model pro návrh, ne montážní dokumentace. EPS/LOAD/ATS a jištění musí být později doplněny podle skutečnosti.
+## 2. Topologie a fyzikální meze
 
-```mermaid
-flowchart TB
-  DS[Distribuční síť] <-->|G import kladný| E[Fakturační elektroměr]
-  E <--> MD[Deye hlavní CT / meter – skutečný PCC]
-  MD <--> A[Vnější AC sběrnice a odbočka Deye]
-  A <-->|D kladný při dodávce Deye| DY[Deye GRID port]
-  DY <--> DB[Trading baterie]
-  A <-->|Q kladný do zóny| MS[SolaX hlavní CT / meter]
-  MS <--> B[Vnitřní sběrnice]
-  B --> H[Dům]
-  SX[SolaX GRID port] <-->|S kladný ze SolaXu| B
-  PV[PV] --> SX
-  SX <--> SB[Baterie SolaX]
-  MD -. měření .-> DY
-  MS -. měření .-> SX
+```text
+DISTRIBUČNÍ SÍŤ
+       |
+ Deye CT/Meter — skutečný PCC
+       |
+       +---- Deye GRID ---- Deye baterie
+       |
+ SolaX CT/Meter — hranice zóny
+       |
+       +---- SolaX GRID ---- PV + SolaX baterie
+       |
+       +---- DŮM
 ```
 
-Bez ztrát: Q = H − S; G = Q − D. Deye není členem lokální měřené bilance SolaXu.
-Nabíjení/prodej Deye tedy nemá být kompenzováno SolaXem přes jeho hlavní CT.
-Deye naopak vidí zbytkovou spotřebu i export zóny. Původ exportu (PV versus baterie SolaX) z PCC nepozná.
+Definice: `E_z` = export ze zóny SolaX (SolaX AC dodávka minus dům);
+`D` = dodávka Deye z GRID portu, kladně ven, záporně odběr;
+`E_PCC = E_z + D`. Ztráty a časový nesoulad měření jsou diagnostická tolerance.
+**DEDUKCE:** SolaX CT nevidí Deye, proto nemá jeho nabíjení či prodej kompenzovat. Deye vidí celý objekt, ale nepozná původ přebytku PV versus SolaX baterie.
 
-SolaX musí dovolit přebytek ven ze své zóny. Lokální export control 0 W může omezit PV dříve, než Deye uvidí přebytek.
-Při plném/odpojeném Deye přebytek pokračuje do sítě. Deye exportní limit neumí automaticky přiškrtit SolaX.
-Výslovná podpora vyjmuté trading větve výrobcem SolaX není doložena; přijatelnost hranice lokální regulace zůstává podmínkou projektového ověření.
+**DEDUKCE:** k dodržení 9800 W stačí současně splnit `E_z ≤ 9800` a `D ≤ 9800 − E_z`.
+Nejde o součet dvou samostatně povolených 9,8kW zdrojů. Při 4000 W ze zóny smí Deye přidat nejvýše 5800 W **na AC větvi**; to není bateriový setpoint 5800 W bez ztrát.
+Při `E_z > 9800` by bylo třeba záporné D (absorpce) nebo omezení SolaXu. Pouhé snížení Deye dodávky na nulu nestačí.
 
-## 3. Jednotné veličiny a nové PCC
+**DOK / DEDUKCE:** SolaX Export Control používá hlavní meter/CT. Po přesunu tedy logicky řídí hranici své zóny.
+Standardní [SolaX Meter Installation](https://kb.solaxpower.com/solution/detail/ff8080818407e2a701840a15af480028) umísťuje měření před všechny zátěže a další výrobny; výslovné schválení vyjmutí Deye není doloženo.
+Schéma není montážní dokumentace; EPS/LOAD, ATS, fázování a jištění musí posoudit projekt instalace.
 
-V rozhraní V3: výkon baterie **kladný vybíjení, záporný nabíjení**; PCC **kladný export**. Vše ve W.
-Převody existují jen na hranici integrací. Staré V2 používá baterie opačně: kladné nabíjení.
+## 3. PCC — co měří konkrétní entity
 
-Kritický rozpor: README/SAFETY_INVARIANTS V2 uvádí sensor.solax_measured_power kladně export; aktuální plugin SolaX i produkční V3 preview uvádějí kladně import. Nevolit znaménko podle názvu ani staré dokumentace. Vyžadovat korelaci s nezávislým PCC měřením při známém importu a exportu.
+**KÓD:** následující entity jsou v registru s `disabled_by=null`. To nepotvrzuje jejich live dostupnost.
+Solarman instaluje tyto signed power mapy (low/high word, W):
 
-Po přepojení:
-- sensor.solax_measured_power = **zóna**, nikdy autorita celého PCC.
-- sensor.deye_external_power = kandidát PCC z externích CT; ověřit vztah k součtu sensor.deye_external_ct1_power/ct2_power/ct3_power.
-- sensor.deye_grid_power může být vlastní GRID port Deye; bez korelace jej nepoužít jako PCC.
-- Nový navrhovaný sensor.energy_v3_pcc_export_w bude normalizovaný alias ověřeného zdroje. Nyní neexistuje jako potvrzená entita.
-- Výpadek Deye nesmí znemožnit ochranu PCC při aktivním prodeji SolaXu. Pokud externí CT přestane publikovat, zastavit obchod; pro autonomní PV zůstává nutná samostatná ochrana.
-- G + D = Q je diagnostická kontrola při sladěných časech, ne náhrada skutečného PCC.
+| Entita | Registry instalované definice | Význam | Polarita a autorita |
+|---|---|---|---|
+| `sensor.deye_external_ct1_power` | 616 / 705 (0x268 / 0x2C1) | Externí CT fáze L1 | Fyzické znaménko NEOVĚŘENO |
+| `sensor.deye_external_ct2_power` | 617 / 706 | Externí CT fáze L2 | Totéž; ověřit pořadí fází |
+| `sensor.deye_external_ct3_power` | 618 / 707 | Externí CT fáze L3 | Totéž |
+| `sensor.deye_external_power` | 619 / 708 | Celkový výkon externích CT | **Preferovaný PCC zdroj po ověření skutečné polohy CT a polarity** |
+| `sensor.deye_grid_power` | 625 / 690 (0x271 / 0x2B2) | Vnitřní měření GRID větve Deye | Není externí CT; nepoužívat jako celkový PCC |
+| `sensor.solax_measured_power` | input 0x46, S32, gain/offset | Hlavní meter/CT SolaXu | Po přesunu výhradně zóna, nikdy PCC |
 
-## 4. Konkrétní HA rozhraní z auditu
+Mapování je **KÓD**, přiřazení fyzické měřicí hranice je **DEDUKCE podmíněná zapojením**.
+Ani dnešní external CT nelze bez ověření polohy automaticky označit za fakturační PCC.
+Součet CT1+CT2+CT3 má odpovídat total při sladěných vzorcích; total a součet nejsou dva nezávislé důkazy stejné polarity.
 
-Všechny níže uvedené Remote/VPP entity byly nalezeny ve filtrovaném registru s disabled_by=null.
-Volby a registry jsou z nainstalovaného zdrojového kódu; aktuální živé hodnoty nebyly dostupné.
+### Rozpor znaménka SolaXu je uvnitř instalované integrace
 
-| Úloha | Entity / služby | Zjištění |
+**KÓD:** `plugin_solax.py:534` a preview komentují `measured_power` jako +import.
+Současně `const.py:597–620` pouze aplikuje `(raw + offset) × gain / 100`,
+`value_function_grid_import` vybírá **záporné** hodnoty a `value_function_grid_export` **kladné**.
+Energy Dashboard mapping `plugin_solax.py:13391` má `invert=True`.
+Výchozí gain 100 %, povolený 90–110 %, sám znaménko neobrací.
+
+**Závěr: NEOVĚŘENO fyzicky.** Původní tvrzení „instalovaný plugin potvrzuje +import“ je příliš silné.
+Komentář, historický README ani matematika odvozené entity nevyřeší polaritu skutečného měření.
+U Deye definice neobsahuje u external power explicitní invert; signed dekódování samo význam znaménka neurčuje.
+`attributes: [inverse]` u grid power nelze bez zkoušky zaměnit za přepólování jeho hlavního stavu.
+
+### Normalizovaná entita
+
+Návrh `sensor.energy_v3_pcc_export_w`: **signed W, kladně export, záporně import**.
+Po potvrzení CT zdroj výhradně `sensor.deye_external_power`:
+
+```text
+energy_v3_pcc_export_w = k × deye_external_power
+k = -1, pokud zdroj znamená +import; k = +1, pokud znamená +export.
+```
+
+**NEOVĚŘENO:** k zatím nemá schválenou hodnotu, entitu nyní nezavádět.
+Nepoužít `float(0)` pro unavailable, žádný automatický fallback na SolaX či Deye grid power.
+Při chybě/nezaručené čerstvosti publikovat unavailable, ukončit nucený obchod.
+Atributy: zdroj, ověřená topologie a k, čas fyzického vzorku/pollu, quality.
+Pro energii použít samostatně `max(E_PCC,0)`; signed entita musí uchovat informaci o importu.
+
+**Potřebná read-only korelace:** nezávislý směrový údaj elektroměru/analyzátoru a současné vzorky všech šesti entit při známém importu a exportu, se zaznamenaným přirozeným výkonem Deye.
+Po přepojení ověřit `E_PCC ≈ E_z + D`, součet fází, reakci zóny a časový posun.
+Pouhé jedno klidové 0 W měření nestačí; v této relaci nebyla změnou zátěže ani režimu vyvolána žádná zkouška.
+
+## 4. Nativní exportní ochrana 9800 W
+
+### Co lze doložit a co nikoli
+
+| Otázka | Závěr a důkaz | Co ještě ověřit |
 |---|---|---|
-| SolaX režim | select.solax_charger_use_mode | Self Use Mode zná produkční preview; přesné live options ještě přečíst |
-| SolaX skutečný VPP režim | sensor.solax_modbus_power_control | HW readback, nepovažovat optimistický select za potvrzení |
-| SolaX přímé VPP | select.solax_modbus_power_control_direct; select.solax_remote_control_target_set_type_direct | Plugin sestavuje úplný FC16 blok, mode 0 vypíná VPP; přesné labels je nutné dodat před implementací |
-| SolaX mode 1 parametry | number.solax_remotecontrol_active_power_direct; number.solax_remotecontrol_reactive_power_direct; number.solax_remotecontrol_duration_direct; number.solax_remotecontrol_timeout_direct | Registry bloku 0x7C..0x88; neplést mode 1 AC výkon s bateriovým setpointem |
-| SolaX další VPP parametry | number.solax_remotecontrol_charge_discharge_power_direct; number.solax_remotecontrol_push_mode_power_direct | Mode 2/3 respektive 4; přesná provozní volba zůstává neověřená |
-| SolaX původní autorepeat | select.solax_remotecontrol_power_control; number.solax_remotecontrol_active_power; number.solax_remotecontrol_duration; number.solax_remotecontrol_autorepeat_duration; button.solax_remotecontrol_trigger | Existuje lokální opakovací smyčka integrace; nemíchat s přímým VPP |
-| Deye remote enable | select.deye_remote_mode | 1100; Disabled / Remote mode 1 / Remote mode 2 / Remote mode 3; který mode použít musí doložit test |
-| Deye typ cíle | select.deye_remote_power_control_mode | 1104; AC-side control / Battery-side control; Grid-side zde není vystaven |
-| Deye strategie | select.deye_remote_battery_side_control_strategy | 1105; jen Power (2). SOC-aware strategie 3–5 nejsou vystavené |
-| Deye výkon | number.deye_remote_constant_power_setpoint | 1109 signed; procenta jmenovitého výkonu, krok 0,1 %, rozsah entity ±120 % |
-| Deye SOC | number.deye_remote_constant_soc_setpoint | 1110; krok 0,1 %. V Power (2) nelze předpokládat vynucení tohoto SOC |
-| Deye watchdog | number.deye_remote_watchdog; sensor.deye_remote_watchdog_status | 1101; 10–18000 s, sentinel 65535 = Disabled. Remote skupina čtena po 30 s |
-| Nebezpečná volba | button.deye_disable_remote_watchdog | Zapisuje 65535; V3 ji nepoužije |
-| Nativní Deye | select.deye_work_mode; select.deye_time_of_use; select.deye_ac_coupling; switch.deye_export_surplus | Registrováno, přesné volby číst z live atributů před implementací |
-| Limity proudu | number.deye_battery_max_charging_current; number.deye_battery_max_discharging_current | Registrováno; přijatelnost nuly a efekt na firmware ověřit |
-| Limity sítě | number.deye_grid_max_export_power; number.deye_grid_max_import_power | Nejsou náhradou globálního PCC limiteru |
-| SolaX SOC limity | number.solax_selfuse_discharge_min_soc; number.solax_battery_charge_upper_soc | Respektovat fyzická/BMS omezení |
-| Fyzická telemetrie | sensor.solax_battery_capacity; sensor.solax_battery_power_charge; sensor.solax_inverter_power; sensor.solax_pv_power_total; sensor.deye_battery; sensor.deye_battery_power; sensor.battery_power_otoceny; sensor.deye_power | Historická repo mapa; použitelnost live znovu ověřit |
-| Health | binary_sensor.deye_connection; binary_sensor.deye_battery_fault; binary_sensor.deye_battery_alarm; sensor.deye_device_fault; sensor.solax_run_mode | Repo V3 nemá ověřený SolaX fault readback |
+| SolaX Export Control omezuje měřenou hranici? | **DOK:** [SolaX návod pro X3-Hybrid G4](https://kb.solaxpower.com/faq/detail/8af1adf7930b02ff019319e9fc680183) váže funkci na správné CT/meter. **KÓD:** Export Control User Limit je holding 0x42, X3 scale 10, HA W. **DEDUKCE:** po přesunu hranice = zóna. | Skutečná konfigurace 9800 W, fáze/součet, VPP priorita a porucha měření na G4.2 |
+| Deye Max Sell Power = celý PCC? | **DOK:** [SM2 manuál, tištěná s. 38 / PDF s. 40](https://www.deyeinverter.com/deyeinverter/2025/08/19/%E3%80%90b%E3%80%91manual_sun-3-12k-sg05lp3-eu-sm2_20250819_en.pdf) popisuje maximum dodávky do sítě; nerozlišuje výslovně tuto externí výrobnu. **NEOVĚŘENO:** limit na součet externího SolaXu + Deye není prokázán. | Externí výroba 0 / 4000 / 9800 W, stálý vyšší požadavek Deye, současné PCC a vlastní AC |
+| Platí při Remote 1109? | **KÓD:** Solarman zapisuje registry, firmware regulátor neimplementuje. **NEOVĚŘENO:** priorita Max Sell Power vůči remote bateriovému požadavku. | Stejný test nativně a v každém skutečně používaném Remote mode; nelze přenést výsledek mezi mode 1/2/3 |
+| SolaX sám dosáhne 9800 W? | **DEDUKCE:** Deye smí mít nejvýše nulovou kladnou dodávku. | Zda Deye snižuje svůj výkon podle externího CT, včetně malých nesymetrií |
+| SolaX překročí limit? | **DEDUKCE:** Deye může přebytek absorbovat jen s dostupnou kapacitou/výkonem a povoleným nabíjením. Přes GRID neexistuje doložená řídicí vazba na SolaX. | Export musí zvládnout vlastní SolaX limiter i s plným nebo blokovaným Deye |
+| Plná Deye baterie, ztráta CT, restart, změna režimu? | **NEOVĚŘENO:** nejsou doloženy fail-safe reakce ani priority všech limitů. | Samostatné scénáře T4/T5; odpojení komunikace CT nelze zaměnit za fyzicky obrácené CT |
+| Rychlost a překmity? | **NEOVĚŘENO:** žádná naměřená odezva ani garantovaný překmit pro tento firmware. | T6, nezávislý rychlý záznam; HA polling není rychlost vnitřní regulace |
 
-Deye přepočet pro 12 kW: procenta = P_W / 120; raw1109 = procenta × 10.
-Například +2400 W = +20 % = raw +200. Kvantovat k nule po 12 W; rozsah ±120 % není povolení provozovat ±14,4 kW.
-SolaX původní preview uvádí kladné nabíjení/záporné vybíjení a 100W krok; je to tvrzení konfigurace, nikoli fyzicky ověřená univerzální polarita všech VPP módů.
+**KÓD — zásadně různé Deye entity:**
 
-Budoucí entity volat standardně přes number.set_value, select.select_option, button.press, switch.turn_on/off. Specifikace těchto standardních akcí je návrh; live service registry nebyl načten.
-Lokální Solarman services.yaml potvrzuje read_holding_registers/read_input_registers a write_single_register/write_multiple_registers s device/address/value(s).
-Přímé zápisové služby nepatří do API optimalizátoru. V auditu nebyla volána žádná.
-HAEO entity sensor.battery_* a number.battery_* jsou model optimalizátoru, nikoli potvrzení fyzického stavu.
+| Funkce | Entita / registr | Význam v návrhu |
+|---|---|---|
+| Max Sell Power | `number.deye_export_surplus_power`, 143 / 0x8F | Kandidát pro pevné nastavení 9800 W; není to následující registr |
+| Grid Max Export Power | `number.deye_grid_max_export_power`, 231 / 0xE7, scale 10 | Jiný parametr; nepoužít jako synonymum Max Sell Power |
+| Zero Export To CT | `select.deye_work_mode`, 142 = 2 | Nativní režim s externí CT zpětnou vazbou; nelze jej automaticky chápat jako „export 9800 W“ |
+| Solar Sell | `switch.deye_export_surplus`, 145 | Povolení prodeje přebytků, samo není číselný limit |
+| AC coupling Grid | `select.deye_ac_coupling`, 234, bit 0 | Využití externí AC energie, nikoli povel SolaXu ke snížení výroby |
 
-## 5. Blokování Deye — volba jedné otestované cesty
+**DOK:** manuál odlišuje Selling First, Zero Export To Load a Zero Export To CT.
+U posledního popisuje externí CT regulující výkon **Deye**; TOU povoluje časové nabíjení/vybíjení.
+Z toho neplyne priorita všech funkcí při Remote Mode ani pravomoc regulovat cizí střídač.
+GEN/microinverter frekvenční omezení není důkazem omezení SolaXu připojeného na společný GRID se sítí.
 
-| Způsob | Výhoda | Riziko / watchdog / persistence | Návrh |
+### Rozhodovací pravidlo
+
+**Návrh / NEOVĚŘENO:** SolaX Export Control = 9800 W a Deye **Max Sell Power** = 9800 W jsou preferovaná statická nastavení pro akceptační test. Dnes nebyla změněna ani jejich skutečná hodnota přečtena.
+Při doložení společné funkce je ponechat a v HA pouze monitorovat, koordinovat režimy a ukončovat nucený obchod při poruše.
+**Původní vzorec HA regulátoru target += 9800 − PCC se z návrhu odstraňuje.**
+Pokud Deye omezuje pouze vlastní dodávku nebo Remote limit obchází, zůstává DEYE_SELL v této kombinaci nepovolený.
+Neřešit to automaticky novou regulační vrstvou; nejdříve potvrdit výrobcem či testem správný nativní profil.
+
+**DEDUKCE:** plný Deye sám není důvod pořizovat další ochranu, pokud SolaX prokazatelně drží svou zónu a Deye nepřidává nad zbývající prostor.
+Požadavek je prokázaná ochrana bez HA; další hardware ani software není automatickou podmínkou.
+Naopak zastavení obchodů v HA nenapraví vadný lokální SolaX limiter při autonomní výrobě.
+
+### Okamžitý výkon a čtvrthodina
+
+**Požadavek uživatele:** provozní cíl 9800 W; maximální 15min průměr exportu 10000 W.
+**DEDUKCE:** za 900 s odpovídá 9800 W energii 2,45 kWh, 10000 W energii 2,50 kWh.
+Rezerva 200 W představuje za plnou čtvrthodinu pouze 50 Wh; není zárukou zvládnutí libovolného překmitu.
+Krátký překmit sám nedokazuje překročení 15min limitu a dodržení průměru negarantuje okamžitý strop.
+**NEOVĚŘENO:** pravidlo distributora (pevná čtvrthodina / rolling, signed net / export-only, součet fází).
+Do potvrzení sledovat export-only energii i signed bilanci s časovým vážením a označením neúplného okna.
+Výpadky vzorků nejsou nula. Historie po restartu není plná čtvrthodina.
+Jde o diagnostiku, nikoli nový aktivní budget controller.
+
+## 5. Deye Remote Mode a výběr blokace
+
+**DOK:** [Deye třífázový protokol, PDF s. 41–42](https://download.axilogi.com/DEYE/Other/MODBUS_RTU.pdf) uvádí:
+
+| Registr | Protokol a instalovaný KÓD |
+|---|---|
+| 1100 | Disabled, Remote mode 1/2/3; význam rozdílů není vysvětlen |
+| 1101 | Watchdog 10–18000 s; 65535 vypíná. Vypršení opustí remote, neznamená HOLD |
+| 1104 | AC-side 0, Battery-side 1; Grid-side 2 je v poznámce v rozporu s rozsahem 0–1 a není vystaven |
+| 1105 | Battery control; instalace vystavuje jen Power = 2 |
+| 1109 | Bateriový power setpoint, signed, 0,1 % jmenovitého výkonu |
+| 1110 | SOC setpoint, 0,1 %; neprokazuje SOC ochranu strategie Power |
+| 1111 | Samostatný celkový AC output setpoint; není totéž co 1109 |
+
+**KÓD:** remote skupina se čte po 30 s, zápisy FC16. Vystavené entity:
+`select.deye_remote_mode`, `select.deye_remote_power_control_mode`,
+`select.deye_remote_battery_side_control_strategy`, `number.deye_remote_constant_power_setpoint`,
+`number.deye_remote_constant_soc_setpoint`, `number.deye_remote_watchdog`,
+`sensor.deye_remote_watchdog_status`.
+Watchdog status je dekódování nastavení 1101, nikoli důkaz běžícího odpočtu nebo obnovené lease.
+Který zápis skutečně obnovuje watchdog, protokol neupřesňuje.
+
+**DEDUKCE:** při potvrzeném jmenovitém základu 12 kW je 1 raw krok 12 W, procenta = W / 120, raw = W / 12.
++2400 W by znamenalo +20 % / raw +200 **jen při potvrzené polaritě vybíjení**.
+**KÓD:** testovací skript předpokládá +vybíjení / −nabíjení; fyzická validace v této relaci chybí.
+Rozsah ±120 % není provozní povolení ±14,4 kW.
+
+| Varianta | Oba směry / přechody | Zápisy, paměť, timeout | Rozhodnutí |
 |---|---|---|---|
-| Battery-side Remote Power = 0 | Jeden průběžný setpoint pro HOLD i obchod, bez přepisu TOU | Nula nemusí v každém mode blokovat všechny cesty; timeout může obnovit nativní zachytávání; SOC strategie Power nemá doloženou ochranu | Preferovaný kandidát po ověření nuly, obou směrů a fallbacku |
-| Maximální charge/discharge proud = 0 | Nezávislé směrové zákazy | Nula/range neověřené; pravděpodobně konfigurační cesta, persistence/EEPROM a priorita BMS neověřené; restart může blok držet | Jednorázový interlock na přechodu, pokud odpovídá uživatelovu ověřenému postupu |
-| AC coupling Disabled + TOU/Export/Grid Charge vypnout | Využije existující nativní nastavení | Samotné AC coupling off nemusí blokovat vybíjení; Grid Charge off nemusí blokovat surplus charging; více zápisů, částečný přechod | Pouze jako celý potvrzený profil, ne jednotlivý „magický“ switch |
-| Vypnutí Deye | Hrubé oddělení | Startup latency, ztráta telemetrie PCC, dostupnost skutečného OFF readbacku; opotřebení relé/cykly | Jen servisní či ověřený fallback, ne regulační smyčka |
-| BMS charge/discharge enable | Tvrdší směrový zákaz | Zásah do ochranné vrstvy, priorit a obnovy BMS, přesná rozhraní neauditována | Nevolit jako běžné API V3 |
+| Oba max battery current = 0 | **UŽIVATEL:** směrové nuly fungují; oba použít pro HOLD | Dva změnové zápisy při vstupu, až dva při obnově; bez heartbeat. EEPROM/persistence a restart NEOVĚŘENO | **Preferovaný výchozí interlock** |
+| Battery-side Power 1109 = 0 | NEOVĚŘENO, zda potlačí i nativní AC coupling za všech stavů | Po nastavení profilu jeden setpoint; potřebná obnova watchdogu. Timeout může vrátit surplus charging | Kandidát po T7; dosud nenahrazuje ověřené nuly |
+| Jen nativní přepínače / AC coupling off | Off samo neprokazuje oba směry | Více konfiguračních změn a možnost částečného profilu | Použít jen celý ověřený profil PV_AUTO/SAFE |
+| Nativní AC coupling + Remote | Dobré oddělení PV_AUTO a obchodu, ale priorita souběhu NEOVĚŘENO | Remote zapnout jen pro obchod; návrat nepovažovat automaticky za HOLD | Preferovaná koncepce, nikoli současně aktivní dva vlastní regulátory |
 
-Žádná naměřená latence ani počet garantovaných EEPROM cyklů nebyly získány. Nelze tvrdit „Remote je určitě RAM“.
-Požadovat potvrzení výrobce nebo test persistence/timeoutu; samotný restart nepotvrdí typ paměti.
-Konfigurační limity měnit pouze při přechodu a jen pokud se hodnota liší. TOU/current settings nepřepisovat každých několik sekund.
-Heartbeat posílat jen do prokázané provozní/volatile cesty. Pokud její persistence není známá, omezuje to aktivaci.
-Výchozí kandidát heartbeat 10 s a timeout 30–60 s je pouze návrh k měření; při readbacku 30 s nelze slibovat 1s potvrzení.
-Nikdy nevypínat watchdog pro pohodlnější řízení.
+**KÓD:** `number.deye_battery_max_charging_current` / `...discharging_current` mapují 108 / 109; definice povoluje 0–350 A.
+**NEOVĚŘENO:** garantované EEPROM cykly, skutečná persistence, latence a priorita BMS/remote nebyly zjištěny.
+Konfigurační proudy měnit jen při změně režimu a rozdílné hodnotě; žádná proudová regulační smyčka.
+Obnovovat výslovně schválené limity, ne slepě poslední neověřenou hodnotu.
 
-Před aktivací zaznamenat přesný uživatelem ověřený recept do tabulky: vstupní režim, zapisované entity/volby, readback, skutečné proudy, latence, reboot a timeout. Vybrat jednu cestu, ostatní ponechat servisní.
+### Trvalý interlock během operace SolaXu
 
-## 6. Režimy a povolené toky
+**Návrh založený na UŽIVATEL / DEDUKCE:**
 
-| Režim | SolaX | Deye | Povolené toky a podmínky |
+1. Ukončit předchozí nucený Deye obchod; zadat 1109 = 0, pokud byl aktivní.
+2. Nastavit oba proudové limity 0 a potvrdit jejich readback i skutečný malý bateriový proud/výkon. Tolerance a doba stabilizace z T7, nikoli přesně 0 W.
+3. Vypnout Deye Remote Mode až v potvrzeném nulovém profilu, ověřit, že nativní profil blokaci respektuje. AC coupling nemusí být periodicky přepínán, jestliže limity blokují obě cesty.
+4. Až potom povolit SolaX VPP. Proudové nuly držet **po celou dobu**, včetně expiry, opakování příkazu a potvrzování konce VPP.
+5. Nejdříve ukončit a fyzicky potvrdit SolaX VPP; teprve pak obnovit potřebné proudy / povolit PV_AUTO.
+6. Při výpadku HA se HOLD sám nesmí uvolnit. Restart Deye musí splnit T7; pokud nuly neudrží nebo se obnoví jiný profil, tento postup zatím není validovaný pro takový výpadek.
+
+Tím je `SOLAX_SELL → zákaz nabíjení Deye` i `SOLAX_AC_CHARGE → zákaz vybíjení Deye` pokryt jedním obousměrným HOLD.
+**NEOVĚŘENO:** uživatelovo potvrzení nul nepokrývá automaticky restart nebo předchozí aktivní remote — to jsou samostatné testy.
+Remote-only alternativa musí prokázat `T_Deye_hold > T_SolaX_remaining + reakční rezerva` nebo trvale blokující fallback.
+Samotná delší lease nestačí při restartu Deye; prokázat i jeho restartový profil.
+
+Pro Deye obchod ponechat watchdog aktivní, nikdy nevolat `button.deye_disable_remote_watchdog`.
+Obnovovat jen platný neexpirovaný požadavek. Konkrétní heartbeat interval se schválí podle testu; 30s polling není důkaz 1s potvrzení.
+SAFE = ověřený stav, nikoli úspěšně odeslaná služba.
+
+## 6. SolaX VPP — jedna preferovaná cesta
+
+**DOK:** [SolaX VPP — mode 8 a registry](https://kb.solaxpower.com/fr/solution/detail/828080819a0a88fa019a0a941afc01e7)
+popisuje mode 8 jako nezávislý PV a bateriový cíl s ukončením přes dobu trvání.
+Bateriový target 0xA4/A5: kladně vybíjení, záporně nabíjení; 0xA2/A3 je PV limit, 0xA6 doba, 0xA7 timeout.
+**DOK:** [SolaX VPP — mode 1](https://kb.solaxpower.com/it/solution/detail/40289fdf9279482a01927a1743c40230)
+naopak řídí AC port, kladně odběr / záporně dodávku. V mode 1 se nejprve vyhodnocuje duration a následně timeout; nejde o univerzální timeout od poslední komunikace.
+Mode 3/9 se SOC cílem není náhradou krátké časové lease. Mode 4 má odlišné znaménko od mode 1.
+
+**Preferovat direct mode 8** s konečnou dobou; žádná emulace Self Use nebo Grid Control v HA/integraci.
+Mimo obchod skutečný nativní `Self Use Mode`.
+Důvod: přesný bateriový požadavek bez neustálého přepočtu PV→AC a bez další autorepeat vrstvy.
+Nativní exportní ochrana má dál chránit zónu; její priorita při mode 8 je **NEOVĚŘENO / T3**.
+PV limit předem schválit podle instalace; nepoužít nulu omylem ani „max“ bez ohledu na exportní ochranu.
+
+**KÓD:** instalovaný SolaX Modbus 2026.10.2 obsahuje `build_direct_vpp_command` a `async_write_direct_vpp`.
+Mode 8 pošle jeden úplný FC16 blok **0xA0–0xA7**; mode 0 blok 0x7C–0x88 pro ukončení.
+Parametry neaktivního režimu se připravují lokálně, aktivní parametr vyvolá přečtení HW mode (input 0x100) a celý blokový zápis.
+Proto při startu připravit parametry při vypnutém VPP a **aktivovat mode jako poslední**.
+Změna několika parametrů za běhu může znamenat několik plných bloků; pro běžné obnovení stejného cíle postačí jedno explicitní znovuodeslání režimu. Jeho skutečné obnovení doby ověřit T8.
+
+| Úkon | Konkrétní instalované entity / minimální fyzická komunikace |
+|---|---|
+| Připravit | `select.solax_power_control_mode_target_set_type_direct = Set`; `number.solax_remotecontrol_pv_power_limit_direct`; `number.solax_remotecontrol_push_mode_power_8_9_direct`; `number.solax_remotecontrol_duration_8_direct`; `number.solax_remotecontrol_timeout_8_9_direct`. Při mode 0 lokální příprava, nikoli pět zápisů do střídače |
+| Spustit | `select.solax_modbus_power_control_direct = Individual Setting - Duration Mode` → jeden blok |
+| Nabít / vybít | Push target záporný / kladný; jde o BAT výkon, ne PCC či AC port |
+| Obnovit | Jeden úplný příkaz jen při platné lease; neaktivovat druhou autorepeat cestu |
+| Ukončit | `select.solax_modbus_power_control_direct = Disabled` → jeden blok; potvrdit HW mode a fyzický výkon |
+| Potvrdit | `sensor.solax_modbus_power_control`, bateriový výkon/SOC, AC výkon a PCC; optimistický select nestačí |
+
+**KÓD:** všechny uvedené mode 8 direct entity jsou registrované, `disabled_by=null`.
+Duration i timeout direct mají krok **60 s**. Návrh HW duration 60 s je přípustný kandidát; 20s direct lease přes tyto entity neslibovat.
+Timeout = 0 nelze bez T8 vydávat za okamžitý či bezpečný fallback. Změřit skutečný konec nuceného výkonu i návrat do Self Use.
+Před vstupem musí být Self Use potvrzen; firmware se může vracet do předchozího režimu.
+Při HA startu žádný replay uložených direct parametrů, platný nový požadavek až po readbacku.
+
+**DOK integrace:** [mode 1 dokumentace](https://github.com/wills106/homeassistant-solax-modbus/blob/main/docs/solax-mode1-modbus-power-control.md)
+označuje VPP příkazy za ne-EEPROM, konfigurační export limit za EEPROM. Je to tvrzení autora integrace, ne změřená endurance konkrétního firmware.
+**NEOVĚŘENO:** mode 8 chování při restartu střídače/HA, komunikaci a limitu BMS.
+Pokud T8 neprojde, obchodní SolaX režimy neaktivovat; nezapínat automaticky alternativní řídicí smyčku.
+Původní `remotecontrol_trigger` + autorepeat cestu během migrace ukončit; direct Disabled samo neprokazuje vypnutí staré opakovací smyčky.
+
+## 7. Režimy, příkazy a přechody
+
+Níže jsou **návrhové minimální změny**, nikoli pokyny k provedení nyní.
+Nastavení měnit pouze při rozdílu, readbacky a podmínky nepřeskakovat.
+Nula BAT nerovná se nula GRID (ztráty/vlastní spotřeba).
+
+| Režim | SolaX | Deye a minimální potřebné změny | Podmínka vstupu / ukončení |
 |---|---|---|---|
-| SELF_USE | Autonomní vlastní zóna | HOLD obou směrů | PV→dům/baterie SolaX; zbytkový import/export; Deye uchovává trading energii |
-| PV_AUTO | Autonomní | Nativní GRID surplus charge, vybíjení zakázáno | Jen skutečný přebytek→Deye; nesmí běžet úmyslný prodej/nákup SolaXu |
-| DEYE_SELL | Autonomní | Bounded remote discharge | Deye→PCC/dům, žádné jeho nabíjení; celkový PCC guard |
-| SOLAX_SELL | Ověřený VPP discharge | Potvrzený HOLD obou směrů | SolaX→dům/PCC; Deye nesmí export odsát |
-| SOLAX_AC_CHARGE | Ověřený VPP charge | Potvrzený HOLD obou směrů | Síť/PV→SolaX; Deye nesmí odběr krýt |
-| DEYE_AC_CHARGE | Autonomní | Ověřený bounded remote charge | Volitelné pro obchod, default zakázané; oddělený importní limit |
-| SAFE | Ukončení VPP, ověřený autonomní profil | Ověřený neobchodní profil | Žádný nucený obchod; přesný fallback musí být testován |
+| SELF_USE | VPP Disabled, Self Use | HOLD: oba max proudy 0, remote Disabled | Potvrdit obě bateriové blokace |
+| PV_AUTO | Nativní Self Use | Native surplus profile: Remote Disabled, AC coupling Grid, běžné Grid Charge off, nulový discharge limit, charge limit schválený | Jen po ukončení SolaX VPP; TOU/work mode podle ověřeného celého profilu, nikoli odhad |
+| DEYE_SELL | Self Use | Připravit 1104=Battery, 1105=Power, nulový cíl, aktivní 1101, potvrzený 1100 mode; charge limit 0, discharge schválený, potom 1109 target | T2/T3 společného limitu, T7/T9 remote a SOC; při konci nejprve výkon 0/HOLD |
+| SOLAX_SELL | Direct mode 8, BAT target +P | Držet obousměrný proudový HOLD, remote vypnutý | Potvrdit HOLD **před** VPP; uvolnit až po skutečném konci |
+| SOLAX_AC_CHARGE | Direct mode 8, BAT target −P | Stejný HOLD | Potvrdit skutečný AC import a BAT nabíjení; PV může část BAT cíle pokrýt |
+| DEYE_AC_CHARGE | Self Use | Charge limit schválený, discharge 0; remote profil jako výše, 1109 opačného směru | Ověřený importní/fázový limit, SOC/BMS; žádné vybíjení Deye na pokrytí SolaXu |
+| SAFE | Zastavit VPP, potvrdit Self Use | Proudový HOLD, ukončit remote, zachovat nativní ochrany | Při chybě potvrzení zůstat fault; SAFE nelze jen prohlásit |
 
-SELF_USE a PV_AUTO jsou záměrně různé: normální profil může být po validaci PV_AUTO, ale při chybě interlocku se automaticky nepovolí zachytávání.
-Autonomní SolaX může i během DEYE_SELL ukládat vlastní PV; opačná znaménka baterií sama o sobě nedokazují přelévání.
-Detekce má využít Q, PV, oba bateriové výkony a povolený režim; alarm při nevysvětlitelném transferu musí zastavit nucené operace.
-Současný nucený obchod obou baterií V3 první verze nepovoluje.
+**NEOVĚŘENO:** pro DEYE_SELL je výchozí testovací kandidát Remote mode 3 z instalovaného skriptu; rozdíly mode 1/2/3 výrobce dostatečně nepopsal.
+1104/1105/mode/watchdog se nenastavují při každém ticku, pokud profil platí.
+První vstup remote vyžaduje více zápisů než následná změna setpointu; přesný počet heartbeat zápisů závisí na T9.
+**UŽIVATEL / NEOVĚŘENO:** PV surplus schopnost je potvrzena, ale přesný kompletní optimální profil a restartové chování nikoli.
 
-## 7. Minimální HA implementace: 4 skripty + 2 automatizace
+**DEDUKCE:** SOLAX_AC_CHARGE zde znamená povolit řízené nabíjení z AC, nikoli zaručit původ každého wattu v baterii ze sítě.
+Optimalizátor musí vedle BAT cíle sledovat AC import, PV a výkon domu.
+Současný nucený obchod obou střídačů se v první verzi nepovoluje.
 
-Jeden package, žádný nový Python controller. Jména jsou návrh, nyní je nevytvářet.
+Přechody: zastavit původní obchod → potvrdit HOLD/klid → připravit nový profil → aktivovat → potvrdit výkon.
+Selhání kroku neumožní pokračovat do nového režimu. Při ukončování SolaXu se nuly Deye neobnovují v timeout větvi.
+Stale PCC/SOC, chyba BMS či writer conflict ukončí nucený požadavek; nemění cíle v rychlé exportní regulační smyčce.
 
-1. **script.energy_v3_submit** — veřejný vstup; atomicky validuje celý payload, nastaví požadavek a zavolá reconcile. Žádné samostatně přepisované mode/power helpery jako transakční API.
-2. **script.energy_v3_reconcile** — jediný vlastník přechodů, mode single s frontou v požadavkovém stavu; ne restart, který by přerušil interlock. Vyhodnotí expiry/health/SOC/PCC a připraví oba profily; blokuje nové přechody během potvrzování. Žádný dlouhý 15min delay.
-3. **script.energy_v3_apply_solax** — soukromý adapter, ověřená cesta direct VPP nebo původní autorepeat, nikdy obě. Potvrzení skutečného režimu a výkonu; odlišit AC/battery target.
-4. **script.energy_v3_apply_deye** — soukromý adapter, HOLD/PV_AUTO/remote power, watchdog a potvrzení. Volají jej pouze reconcile a jeho safety větev.
+## 8. Minimální HA architektura
 
-Automatizace:
-- **automation.energy_v3_supervisor**: HA start, změna požadavku, relevantní health/PCC, periodický tick. Expiry, deadband, SOC, čerstvost, export guard, heartbeat jen platného příkazu. Tik nesmí udržovat expirovaný cíl.
-- **automation.energy_v3_safety**: nezávisle sleduje vypršení heartbeat/příkazu, writer conflict, export a neočekávané toky. Nastaví latched fault a zneplatní požadavek. Při běžícím reconcile vyžaduje přednostní abort před dalším zápisem; nesmí souběžně psát adapterům. Bounded wait, poté alarm; ne donekonečna čekající queued STOP.
+Čtyři skripty (nová jména odliší existující V3 testy):
 
-Pomocníci: enabled (initial off), topology_verified (initial false), fault latch, accepted command (jeden JSON), applied mode, reason, last confirmed transition a heartbeat. Delší payload držet v atributech vhodného stavového objektu/eventu; input_text limit 255 znaků nepřeplnit. Konkrétní persistence požadavku je implementační volba, ale start HA jej vždy zneplatní.
+1. `script.energy_v3_submit` — jediný vstup optimalizátoru, validuje celý režim+výkon+expiry a přijme jeden požadavek.
+2. `script.energy_v3_reconcile` — jediný vlastník sériových přechodů; krátké omezené wait/readback kroky, kontrola fault/expiry před každým dalším zápisem. Nepřerušovat interlock pomocí `mode: restart`.
+3. `script.energy_v3_apply_solax` — soukromá direct mode 8 cesta a ukončení; žádný další plánovač.
+4. `script.energy_v3_apply_deye` — soukromý HOLD / native surplus / remote profil; jediná mapa jednotek a polarity.
 
-Přechod vždy break-before-make:
-- Ukončit předchozí nucenou operaci; do potvrzení nezapínat novou.
-- Před SOLAX_SELL/AC_CHARGE potvrdit Deye HOLD fyzickým readbackem a měřením (tolerance a počet vzorků z měření latence).
-- Teprve potom poslat krátkodobý VPP příkaz SolaXu.
-- Při ukončení nejdřív zastavit/ověřit SolaX VPP; až pak uvolnit Deye PV_AUTO.
-- Chyba druhého kroku znamená rollback již provedené části a latched fault. Bez potvrzení nelze označit SAFE jako dosažený.
+Dvě automatizace:
 
-## 8. API pro libovolný optimalizátor
+- `automation.energy_v3_supervisor`: nový požadavek, HA start, expiry, health a periodické obnovení pouze platného krátkého HW příkazu; volá reconcile.
+- `automation.energy_v3_safety`: fault/neočekávané toky/PCC překročení → zneplatnit požadavek a přikázat SAFE přes stejný sériový postup, bez souběžných zápisů adapterům. Pokud přechod běží, latch kontrolovaný před dalším zápisem, omezené čekání a alarm při neúspěchu.
 
-Návrh jediného action script.energy_v3_submit:
+Žádná anti-windup, PID nebo výpočet průběžných exportních korekcí. Exportní alarm je detekce závady, nikoli certifikace autonomního limitu.
+Minimum stavů: enabled (start off), topology_verified (false), fault/reason, jeden accepted request a actual/applied mode.
+Expiry/command ID patří do požadavku, netvořit oddělené pomocníky pro každé pole. Časy potvrzení a výkon lze mít jako diagnostické atributy.
+Dlouhý JSON neukládat do 255znakového input_text/state; použít atributy jednoho stavového objektu. Start HA vždy zneplatní požadavek.
+
+Příklad kontraktu (BAT cíl, pouze dokumentace):
 
 ```yaml
 mode: SOLAX_SELL
 power_w: 2000
 issued_at: "2026-11-04T14:00:00+01:00"
-valid_until: "2026-11-04T14:01:00+01:00"
+valid_until: "2026-11-04T14:02:00+01:00"
 command_id: optimizer-a-123
 ```
 
-power_w je nezáporná velikost; směr a zařízení jednoznačně určuje mode. Pro SELF_USE/PV_AUTO/SAFE musí být 0.
-Jeden vlastník optimalizátoru, max TTL návrhově 120 s, budoucí issued_at nepřijmout mimo toleranci hodin, valid_until > issued_at a > now.
-Neplatné/NaN/boolean/mimo rozsah → odmítnout; replay staršího příkazu odmítnout. Stejný command_id + stejný payload je idempotentní a neprodlouží expiraci. Nové prodloužení musí mít nové ID.
-Režim a výkon přijmout společně; helpery dashboardu nejsou API.
+power_w je nezáporná velikost BAT cíle, směr určuje mode; v SELF_USE/PV_AUTO/SAFE = 0.
+Max TTL návrhově 120 s, nový příkaz nesmí obnovit starou/expirovanou lease.
+Odmítnout NaN/boolean/mimo rozsah, neplatné časy a replay. Stejné ID+payload neprodlužuje platnost.
+HW duration nikdy nesmí způsobit obchod delší než přijatá lease; s 60s krokem obnovovat pouze tehdy, pokud zbývá celý prokázaný bezpečný interval.
+Žádný optimizer (HAEO, Predbat, HAESS, vlastní) nesmí zapisovat fyzické entity.
+Applied znamená potvrzený režim; skutečný BAT a AC výkon publikovat odděleně.
+SOC/BMS limity omezují příkaz lokálně i v HA; 1110 v Power strategii není náhrada rezervy.
 
-Odpověď/diagnostika: accepted/rejected, actual_mode, applied_power_w, limiting_reason, valid_until, interlock_confirmed a fault.
-Applied = potvrzený profil, nikoli pouhá úspěšná HA service call. Výkon je bounded target, skutečnost zveřejnit samostatně.
-HAEO/Predbat/HAESS adaptéry pouze převádějí aktuální plán do tohoto kontraktu. Ceny, forecast, účetnictví a replan zůstávají mimo executor.
+## 9. Aktuální writeři — audit 2026-11-04
 
-## 9. PCC ochrana, rezervy a watchdog
+**KÓD:** `configuration.yaml` zahrnuje `automations.yaml`, `scripts.yaml` a `packages/`.
+Registr `disabled_by=null` není on/off stav automatizace, úspěšná konfigurace není důkaz provedeného příkazu.
+[Inventář z července](energy-v2-writer-inventory.md) zůstává historickým podkladem; jeho on/off nepřenášet na dnešek.
 
-Jeden rozpočet pro celý objekt: provozní cíl **9800 W**, požadovaný limit **10000 W / 15 min**.
-Nepřidělovat každému střídači vlastní 9,8 kW. Krátký překmit sám není prokázané 15min porušení.
-Semantika měření distributora (pevná čtvrthodina / rolling, export-only / signed net) musí být potvrzena; do té doby konzervativně sledovat oba časově vážené 900s ukazatele a kladný export bez kompenzace importem.
-Energie za 15 min: 2,45 kWh provozní / 2,50 kWh limitní. Mezery v datech nejsou nula a okno po restartu není úplné.
+| Zdroj právě přečtené konfigurace | Doložené možnosti zápisu / stav důkazu | Při budoucí migraci |
+|---|---|---|
+| ENERGY TRADING plánovač, vykonavatel, watchdog a `script.energy_trading_*` | Režimy obou střídačů, TOU, AC coupling, grid charge, limity; live on/off neznámé | Vyřadit všechny spouštěcí cesty a ruční dashboard tlačítka před jediným V3 writerem |
+| `script.nastaveni_fve_solax_stop_deye_export`, `...restore_deye_normal` | Přímé fyzické zápisy bez vlastního masteru | Archivovat jako legacy, nevolat z nového SAFE |
+| Kalendářní nákup/prodej, cenové prodeje V1/V2, SOC stop, `automation.fve_solax_zpet_do_self_use_po_vybiti_deye` | SolaX režim/manual/current; soubor obsahuje další stop automatizace nad rámec starého inventáře | Zkontrolovat celou skupinu i opožděné běžící akce |
+| `automation.gridcontrol_charge`, „Chytré řízení nabíjení baterie dle ceny“, „Deye: Řízení baterie dle ceny“ | VPP/autorepeat, charge current, Deye režimy a export; live stav neznámý | Vypnout/archivovat při migraci, nikoli nyní |
+| „Zakaze pretoky pri cene nizsi nez 0,40Kč“ / „Povoli pretok kdyz je cena vyssi nez 0,4Kč“ | `automations.yaml:656–692` mění `number.solax_export_control_user_limit` | Vyřešit konflikt s pevným limitem 9800; cenové omezení vyjádřit jedním vlastníkem, bez EEPROM smyčky |
+| **`script.energy_v3_stop/buy/sell/trade_test` v scripts.yaml** | **Fyzické writeři**, registrované. Trade test nastavuje Battery-side/Power/Remote mode 3/1109/watchdog 30 s; SolaX přes původní Battery Control + trigger | Oddělit od preview a archivovat při migraci; nekopírovat watchdog off ani 6s potvrzení při 30s pollu |
+| `script.energy_v3_stop` | `scripts.yaml:701–708` obsahuje `button.deye_disable_remote_watchdog` | Nová V3 tuto akci nepřebírá |
+| `packages/energy_v3.yaml` | REVIZE 2 preview: request event a observed mode, samo žádné fyzické writes. **To neplatí pro celý prostor názvů energy_v3** | Archivovat/odlišit od nových jmen; zónový SolaX zdroj po přesunu přestat nazývat PCC |
+| AppDaemon `energy_v3_shadow.yaml` + `energy_v3/shadow_app.py` | Soubor má aktivní .yaml příponu i přes komentář o .disabled; deklaruje shadow, kód publikuje physical_control=false. Načtení za běhu nepotvrzeno | Zachovat diagnostiku jen s opravenou topologií; ověřit aktivní importy a zbytek nasazených apps |
+| ENERGY V2, staré V3 Python/HAEO, EMHASS/Predbat adaptéry | Repo/deployment historie není důkaz aktuálního writer stavu; apps.yaml zde obsahuje HelloWorld, existuje samostatný shadow YAML | Optimalizátory mohou plánovat, fyzické zápisy pouze přes nové submit |
+| Node-RED `flows.json` | Tab **Energy Manager disabled=false**. Execute Action vytvoří `msg.service` a `switch.solax_charge_from_grid`, ale je to function s `wires:[[]]`, bez HA call. **V tomto uloženém flow není doložena cesta vykonávající tento zápis.** Energy Test také povolen, jen čtení/debug; Flow 1/miner/entity-finder disabled=true | Zabránit pozdějšímu připojení writeru; uložený JSON neprokazuje stav runtime nebo jiné externí flow |
+| Přímé Modbus skripty na začátku scripts.yaml | Cíl `wattrouter_modbus`, nikoli podle názvu automaticky Deye/SolaX | Ponechat po ověření adresáta; regulace spotřebičů může ovlivnit bilanci, není sama inverter writer |
 
-Jednoduchý guard omezuje nucené vybíjení podle skutečného PCC s deadbandem a anti-windup, nikoli podle battery power jako náhrady PCC.
-Přibližný korekční krok: nový target = clamp(starý target + 9800 − skutečný export, 0, požadavek a HW limit). Pouze po ověření přenosu battery→AC a s omezením rychlosti změn; nepouštět dva regulátory do stejného PCC.
-Bez úplné historie žádné zvýšení exportu; nejprve obnovit nezávislé měření nebo zachovat konzervativní statický strop, který má prokázanou schopnost omezit **celý** systém.
+**NEOVĚŘENO:** kompletní aktuální on/off, běžící akce/traces, cloud/VPP aplikace a všechny runtime načtené AppDaemon/Node-RED cesty.
+Nelze poctivě prohlásit, že dnes zapisuje jen jeden systém.
+Před migrací načíst stavy/služby a projít všechny akce `select/number/switch/button/modbus/solarman`, volající skripty i dynamické entity.
+Nyní se nic nevypíná ani nearchivuje.
+Nový „SAFE“ nesmí volat starý restore, který změní proudy nebo zruší watchdog mimo nový postup.
 
-**Blokátor spuštění:** samotné HA zastavení obchodů negarantuje limit při vysokém autonomním PV exportu.
-Musí existovat ověřená cesta omezení SolaX PV / celého AC výkonu nebo nezávislá site ochrana, funkční i při plném Deye a výpadku HA. V tomto auditu není prokázána. Dokud není, nelze tvrdit zachování ochrany 10 kW; nepovolit aktivní V3 ani uvolnění lokálního exportního limitu pouze kvůli tomuto návrhu.
+## 10. Evidence, dostupnost a přesné chybějící údaje
 
-SOC: přečíst skutečné limity z konfigurace/BMS. Starý V3 model má 10% floor + 5 p.b. guard; není to schválení nových rezerv. Efektivní minimum = max(BMS/fyzické minimum, uživatelská rezerva, obchodní rezerva) + ověřený guard; žádný optimizer je nesníží. Max SOC a charge/discharge current/power také omezit podle BMS.
-Power (2) Deye nesmí spoléhat pouze na remote SOC setpoint; hlídat SOC v HA i lokální bezpečný limit.
-Při stale SOC zakázat další nucené nabíjení/vybíjení; fyzické ochrany zůstávají poslední vrstvou.
+Read-only SSH proběhlo existujícím schváleným přístupem podle [AGENTS.md](../AGENTS.md).
+HA Core 2026.10.4; integrace SolaX 2026.10.2; Solarman manifest 0.0.0 (není identifikace upstream revize).
+Čteny byly cílené definice integrací, filtrovaný registr entit, konfigurace skriptů/automatizací/package a Node-RED bez credentials.
+Žádné HA služby ani Modbus read/write služby nebyly volány; čtení souborů neoslovovalo registry střídačů.
 
-Čerstvost: potřebujeme source sample/poll timestamp nebo heartbeat integrace, nikoli pouze last_changed.
-last_updated může být proxy, ale nedokazuje fyzický vzorek; neměnný SOC/0 W nejsou automaticky stale.
-Změřit periodu a jitter; navrhnout limity pro PCC, battery power, SOC a HW readback samostatně.
-Remote readback Deye má definovaný interval 30 s, proto přechodový timeout musí tuto latenci respektovat.
+**Živé stavy nezískány:** GET přes existující prostředí SSH add-onu na Supervisor Core API i přímé Core API vracel **401**, potvrzeno kolem 2026-11-04 14:44 CET.
+HA MCP `home_assistant_chalupa` uvedený v AGENTS.md není mezi dostupnými nástroji.
+Nebyly hledány jiné tokeny, čteny privátní klíče ani obcházena autentizace.
+`core.restore_state`, registr entit a preview komentáře nejsou živá telemetrie.
 
-HA watchdog nestačí při pádu HA. Zařízení musí samo ukončit příkaz po krátké lease.
-**Křížová podmínka:** Deye HOLD musí trvat déle než maximální zbývající SolaX obchodní příkaz + reakční rezerva, případně musí být jeho fallback trvale blokující. Jinak timeout Deye obnoví zachytávání během stále běžícího prodeje SolaXu.
-Timeout/restart návrat do nativního Deye může znamenat nabíjení; není automaticky SAFE.
-Po startu HA: žádné obnovení obchodního požadavku, enabled=false, readback obou zařízení, normalizace a plné potvrzení safe; teprve nový platný příkaz.
+Chybí konkrétně: šest PCC hodnot se stejným časem a nezávislým směrem elektroměru; skutečná poloha CT; MAIN/HMI/DSP/ARM; live options a nastavené limity/remote režim; fyzické BAT proudy/výkony; polling timestamps; aktivní on/off a traces writerů.
+Pro doplnění stačí autorizovaný read-only HA přístup nebo export těchto vybraných stavů; není potřeba posílat tajné údaje do dokumentace.
 
-## 10. Audit V2: co ponechat a co archivovat
+Otisky právě přečtených produkčních souborů (SHA-256, snapshot kolem 14:46 CET):
 
-| Součást | Rozhodnutí pro budoucí implementaci |
+| Soubor | SHA-256 |
 |---|---|
-| apps/energy_v2/trading/*, advisory.py, advisory_app.py, planner.py | Archiv: optimalizace a ekonomika se oddělí od ovládání |
-| allocator.py, load_model.py, shadow_controller.py, executor/*, executor_runtime.py, executor_state_store.py, executor_shadow_app.py | Archiv: obecné přidělování a transakční framework nejsou potřeba; použít jen scénáře testů |
-| charge_controller.py | Archiv regulace proudu; automatické zachytávání přebytku přenechat ověřené nativní funkci Deye |
-| apps/energy_v3/* a docs/energy_v3/* | Historický Python/HAEO shadow návrh, nikoli nový HA runtime; nesmazat bez označení historie |
-| flow.py, export_budget.py a tests/test_export_budget.py | Znovu využít specifikace a testové vektory; neopisovat slepě history handling nebo trailing budget jako aktivní limiter |
-| telemetry.py, deye_state.py, docs/deye-state-freshness-adapter.md | Převzít poznatky o source health; opravit polaritu a autoritu PCC po přepojení |
-| docs/energy-v2-writer-inventory.md | Zachovat jako výchozí inventář; je z července a aktuální aktivitu neprokazuje |
-| homeassistant/config helpery a dashboard | Archivovat diagnostické stovky helperů; nový přehled jen režim, lease, výkon, PCC, rezervy, fault |
-| deploy/appdaemon/apps/* mirror | Ponechat historii, nový YAML nemirrorovat do Python stromu |
-| tests safety/flow/telemetry | Převzít významné scénáře pro HA trace/replay; nepotřebujeme test kopírující každou šablonu |
+| `custom_components/solax_modbus/plugin_solax.py` | `0e0ced568744798c9c9c3d8f9ca118b8e38a0c577fc834d71ec9b3cc2d52e914` |
+| `custom_components/solarman/inverter_definitions/deye_p3.yaml` | `2db48b0b8fdc00df832fd9b4cf936254cd06d5bf6ab1d6117162c6d4e9f113e1` |
+| `scripts.yaml` | `983597b9d53a173bf7641b6563a7db7218ca2b256906c8eb556342364b50804a` |
+| `automations.yaml` | `78383a3dc3bc6af1e95008cb865e28b103e8db8daac7cff4d8272aca3b25dacf` |
+| `packages/energy_v3.yaml` | `8bc95ca8eba1d3c591afff9936b3dc9d707fc8a0a27eb358f1f2482ce37e4ff4` |
+| `/app_configs/a0d7b954_nodered/flows.json` | `ecfb8e8b4e6baf247a8668d7316598863e12cb62a60f49e847f7cf19da501667` |
 
-V tomto PR se nic neodstraňuje. Budoucí archiv přes Git tag/release před změnami, nikoli ihned archivovat celý GitHub repo, kde se V3 vyvíjí.
-Legacy script.energy_trading_*, kalendářní prodej/nákup, gridcontrol_charge, ruční restore skripty a Node-RED jsou potenciální writeři. Před aktivací inventarizovat skutečně aktivní cesty a zajistit jediného vlastníka. Samotné ENERGY V2 enabled=false není dostatečný důkaz.
-Produkční docs/PRODUCTION_STATE.md z 2026-08-03 a capability tabulky starého V3 jsou historické. Uživatelem nově potvrzené funkce nepopírat, ale přesnou recepturu nezaměňovat za existující implementation.
+Veřejný upstream není totožný s instalací. Například [upstream SolaX commit 3dd9be3](https://github.com/wills106/homeassistant-solax-modbus/commit/3dd9be398f91f419db8ba1686d16c048105a0668) opravuje mapování import/export energie; sám nedokazuje znaménko tohoto měřeného výkonu.
+Online SolaX KB některé jazykové varianty vracely 500 a anglická varianta obsahuje tabulky jako obrázky; závěry mode 8 jsou omezené na dostupný indexovaný text výrobce a instalovaný builder.
+Není tím potvrzen firmware test.
 
-## 11. Migrace po malých krocích a akceptace
+## 11. Konkrétní fyzické testy před aktivací
 
-1. **Tento PR:** jen audit/design; žádné změny HA, restart, přepnutí, Modbus write, deployment ani fyzická změna.
-2. Doplnit live read-only snapshot states/services, MAIN/HMI, přesné ověřené blokovací recepty a aktuální writer inventory včetně Node-RED. Potvrdit polaritu a nezávislou PCC ochranu. Dokud chybí, stav BLOCKED_FOR_ACTIVATION.
-3. V dalším PR připravit čistý HA package v preview režimu s unikátními jmény, disabled default, entity map a replay testy. Jediný source YAML, žádný controller scaffold.
-4. Shadow před přepojením pouze s current topology profile. Nepoužít budoucí bilanci jako skutečnost; žádné aktivní příkazy.
-5. Samostatně schválený projekt změny měřicí hranice a exportní ochrany. Před fyzickou změnou zastavit všechny nucené operace, potvrdit návrat, zajistit výchozí profily a rollback. Tato fáze není autorizována tímto dokumentem.
-6. Po změně read-only korelace: zatížení domu, přirozené nabíjení/prodej Deye, součet fází, Q≈G+D, průběh SolaXu. Novou PCC autoritu přepnout atomicky pro všechny guardy a dashboardy; starou V2 diagnostiku nesmí nikdo vydávat za PCC.
-7. Se samostatným oprávněním testovat jediný adapter: HOLD v obou směrech, odpojení HA/network, timeout, restart integrace/HA/střídače. Malé omezené výkony a potvrzení měření. EEPROM otázku neřešit opakovanými rebooty.
-8. Povolit SELF_USE, potom PV_AUTO; pozorovat plný SOC Deye, jeho fault a změny PV. Potom DEYE_SELL, SOLAX_SELL, SOLAX_AC_CHARGE jednotlivě; DEYE_AC_CHARGE volitelně až nakonec.
-9. Připojit jeden optimizer přes lease API. Druhý jen jako alternativní adapter, nikdy současný writer. Při rollbacku nejdřív ukončit V3 a potvrdit HW stav, pak případně obnovit jeden původní systém; stará konfigurace závislá na centrálním SolaX CT po přepojení není automaticky bezpečný rollback.
+**V této relaci žádný test níže nebyl proveden.** Změny režimů, zátěže, CT, výpadky a restarty vyžadují samostatně autorizovanou zkoušku.
+U každého uložit firmware, počáteční nativní profil, surové veličiny, časy a výsledek; samotný HA select nestačí.
+Nezačínat úmyslným překročením přípojky: nejprve nižší bezpečný testovací strop a malé výkony, nominální 9800 W až v kontrolovaných podmínkách.
 
-| Akceptační scénář | Nutný výsledek |
-|---|---|
-| Deye nabíjí/prodává, dům/PV stabilní | SolaX nereaguje na Deye přes zónové měření |
-| SOLAX_SELL → PV_AUTO | Deye HOLD potvrzen před prodejem; uvolněn až po potvrzeném konci VPP |
-| SOLAX_AC_CHARGE | Deye nepokrývá odběr bateriovým vybíjením |
-| Invalid/replay/expired požadavek | Žádný nový obchod ani obnovení staré lease |
-| HA restart / výpadek sítě řízení | Krátké HW timeouty; žádný automatický replay obchodů |
-| Stale PCC / neúplné 900s okno | Žádné zvýšení exportu; fault a zachovaná nezávislá site ochrana |
-| Plný/odstavený Deye + vysoké PV SolaXu | Celkový PCC zůstává chráněný bez spoléhání na absorbování Deye |
-| Částečné selhání přechodu | Neaktivovat další zařízení; viditelný fault, ověřený rollback nebo výzva k zásahu |
-| SOC na rezervě / BMS omezuje | Žádné další nucené vybíjení, alarm při nesouladu |
-| Optimistický select bez změny HW | Režim není označen za applied |
+| ID | Nejasnost a scénář | Akceptační výsledek |
+|---|---|---|
+| T1 | Měřicí hranice, znaménka, fáze; nezávislý import/export před a po přesunu, přirozené změny Deye | Deye external total odpovídá PCC a součtu fází; SolaX po přesunu pouze zóně; schválené k a čerstvost |
+| T2 | Max Sell Power v nativním prodeji s externím SolaX 0/4000/9800 W; kontrola registrů 143 vs 231 | Deye dodávka se sama zmenší na zbývající prostor, příklad 4000→max 5800 AC; zaznamenat, který nativní profil to opravdu zajišťuje |
+| T3 | T2 v používaném Remote mode + 1109; odděleně SolaX mode 8 s pevným export limitem | Remote nepřekročí PCC strop, SolaX VPP neobchází svůj zónový limit; neprovádět zatím souběžný nucený obchod obou |
+| T4 | Plný/charge-blocked/vypnutý Deye, vysoká SolaX PV; potom malé externí překročení bezpečného testovacího stropu | SolaX drží vlastní zónu bez absorpce Deye; při externím překročení určit mez autority Deye, nikoli předpokládat curtailment SolaXu |
+| T5 | Ztráta/obnova CT komunikace, restart a změna work/remote mode obou zařízení | Zdokumentované chybové stavy, žádné obnovení nuceného obchodu, zachovaná potřebná lokální ochrana; pokud ne, kombinaci nepovolit |
+| T6 | Rychlá změna PV/domu při prodeji Deye; záznam PCC rychlejší než přechod a HA polling | Změřit dead time, ustálení, nejvyšší překmit a přebytečné Wh, 15min energii i fáze; žádná domnělá „odezva 1 s“ |
+| T7 | Oba proudy 0 při surplus i požadavku vybíjení, po remote→native, během SolaX SELL i AC_CHARGE, HA/network timeout a restart Deye | Nuly skutečně drží oba směry po celou operaci a přechody; nevrátí se nežádoucí default. Zvlášť porovnat 1109=0 bez proudových nul |
+| T8 | Direct SolaX mode 8: start, aktualizace/reselect, Disabled, konec duration+timeout, HA pád, integrace/střídač restart | BAT znaménko/cíl potvrzeny; známý maximální konec nuceného výkonu a návrat do Self Use; Deye HOLD trvá až za tento konec |
+| T9 | Deye mode 3 Power: polarita, SOC/BMS, 1101 obnova různými zápisy, odpojení komunikace/HA restart | Známý heartbeat a fallback. Žádná důvěra v samotný Enabled watchdog status nebo 1110 |
+| T10 | Writer inventory + invalid/expired/replay request, částečně selhaný přechod | Jeden fyzický vlastník, žádný replay po restartu, nevznikne make před break; rollback neuvolní Deye za běžícího SolaXu |
+| T11 | Smluvní 15min vyhodnocení a mezery v datech | Potvrzené okno/fázové sčítání/netting, měřená energie; neúplné okno jasně označené |
 
-## 12. Zdroje a otevřené otázky
+Latence proudových nul, EEPROM endurance, výrobní priorita nativních limitů a restartová persistence nejsou v tomto auditu změřené.
+Restartový test dokáže persistenci chování, nikoli technologii paměti ani počet dovolených zápisů.
+Doba čekání v HA musí odpovídat fyzické odezvě + poll jitteru; dnešní testovací 6s wait není při 30s readbacku doklad potvrzení.
 
-Repo: [ENTITY_MAP](ENTITY_MAP.md), [writer inventory](energy-v2-writer-inventory.md), [SAFETY_INVARIANTS](SAFETY_INVARIANTS.md), [historický V3](energy_v3/architecture.md); soubory a produkční read-only evidence výše.
+## 12. Migrace a zjednodušení proti původnímu návrhu
 
-Dokumentace výrobců pro navazující ověření:
-- [SolaX Meter Installation](https://kb.solaxpower.com/solution/detail/ff8080818407e2a701840a15af480028)
-- [SolaX External INV / Matebox odlišná topologie](https://kb.solaxpower.com/solution/detail/2c9fa4148ceddee5018e737094382000)
-- [Deye SG05LP3-EU-SM2 manuál](https://www.deyeinverter.com/deyeinverter/2025/08/19/%E3%80%90b%E3%80%91manual_sun-3-12k-sg05lp3-eu-sm2_20250819_en.pdf)
-- [Deye protocol odkaz v nainstalované definici](https://download.axilogi.com/DEYE/Other/MODBUS_RTU.pdf)
+1. Tento PR pouze doplňuje technickou dokumentaci; žádné nasazení ani změna produkce.
+2. Doplnit read-only live snapshot a uzavřít T1. Výslovně vybrat konkrétní profily podle T2/T3/T7/T8/T9; bez nich obchod zůstane neaktivní.
+3. Připravit další implementační PR: jediný HA package, čtyři skripty, dvě automatizace, vypnutý default. Testovat podstatné přechody a selhání, nekopírovat starý executor.
+4. Před aktivací inventarizovat runtime writery a běžící akce. Archivovat staré fyzické ENERGY TRADING/V3 testy, kalendářní a cenové řízení; ukončit staré VPP autorepeat. Nic z toho se nyní neprovádí.
+5. Fyzické přepojení podle samostatně ověřeného projektu; potom přepnout jedinou PCC autoritu na ověřené external CT. SolaX alias už nesmí chránit celý objekt.
+6. Postupně SELF_USE → PV_AUTO → jednotlivé obchodní režimy; SolaX obchod až po prokázání celodobého HOLD. Jeden optimizer, žádný souběžný přímý writer.
+7. Rollback nejprve ukončí nový obchod a potvrdí HW stav, pak lze obnovit jeden zvolený systém. Starý systém s předpokladem centrálního SolaX CT není po přesunu automaticky použitelný.
 
-Odkazy na výrobce navazují na předchozí rešerši; tento audit jejich obsah znovu nevalidoval. Rozhodující jsou konkrétní instalované integrace a firmware.
+**Odstraněno z požadavků:** HA exportní korekční smyčka, anti-windup a univerzální allocator; automatická potřeba další site ochrany bez ohledu na výsledek nativních testů; předpoklad, že každý energy_v3 soubor je preview.
+**Zachováno:** nativní limity, krátké hardwarové příkazy, jediný writer, skutečné readbacky, fyzické směrové interlocky a požadavek 9800 W / 10000 W za 15 min.
+Z historie využít scénáře a entity mapy, nikoli kopírovat runtime `apps/energy_v2/executor*`, `allocator.py`, `charge_controller.py` ani `apps/energy_v3/controller.py`.
 
-Otevřené blokátory: živé HA stavy/služby, přesný HOLD recept, HW timeout fallback a koordinace lease, persistence/EEPROM, fyzicky ověřené znaménko/autorita PCC, fault evidence SolaXu, globální exportní ochrana při autonomní PV a potvrzení smluvního 15min výpočtu.
-
-**Výsledek:** asymetrické měření umožňuje zásadně menší HA řídicí vrstvu. Zachovat jednoduchý stavový přechod, jeden writer, krátké lease a samostatnou skutečnou PCC ochranu; odstranit interní optimalizaci a obecný Python executor z budoucího aktivního provozu.
+**Stav uzavření auditu:** dokumentace a instalované mapování umožňují zjednodušený návrh. Garance celkového PCC limitu v Remote Mode, polarita živého měření a restart/timeout akceptace zůstávají konkrétními otevřenými body; nelze je uzavřít pouze čtením integračního YAML.
