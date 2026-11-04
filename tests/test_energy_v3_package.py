@@ -52,6 +52,9 @@ def test_only_four_scripts_and_two_automations():
     assert package["input_select"]["energy_v3_topology"]["initial"] == "current"
     assert "initial" not in package["input_text"]["energy_v3_command"]
     assert package["input_text"]["energy_v3_command"]["max"] == 255
+    assert package["input_text"]["energy_v3_applied"]["initial"] == '{"m":"UNKNOWN","p":0,"u":0}'
+    assert "energy_v3_preview_mode" not in package["input_select"]
+    assert sum(len(package[domain]) for domain in ("input_boolean", "input_select", "input_text")) == 6
 
 
 def test_executable_graph_cannot_send_physical_commands():

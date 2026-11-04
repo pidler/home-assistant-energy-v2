@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -38,7 +40,46 @@ class Rig:
     def __init__(self, hass):
         self.hass = hass
         self.calls = []
+        self.results = []
+        self.base_time = datetime.now(UTC)
+        self.time = None
         hass.bus.async_listen("call_service", lambda event: self.calls.append(event.data))
+        hass.bus.async_listen("energy_v3_preview_result", lambda event: self.results.append(event.data["result"]))
+
+    def now(self):
+        return self.time or datetime.now(UTC)
+
+    @contextmanager
+    def at(self, seconds):
+        self.time = self.base_time + timedelta(seconds=seconds)
+        with (
+            patch("homeassistant.util.dt.now", return_value=self.time),
+            patch("homeassistant.util.dt.utcnow", return_value=self.time),
+        ):
+            yield
+        self.time = None
+
+    def applied(self, mode, power=None, until=None):
+        self.set(
+            "input_text.energy_v3_applied",
+            json.dumps(
+                dict(
+                    m=mode,
+                    p=(0 if mode in ZERO_MODES else 2400) if power is None else power,
+                    u=(0 if mode in ZERO_MODES else self.now().timestamp() + 60) if until is None else until,
+                )
+            ),
+        )
+
+    async def tick(self, source):
+        from homeassistant.helpers import config_validation as cv
+        from homeassistant.helpers.script import Script
+
+        automation = next(a for a in load_package()["automation"] if a["id"] == f"energy_v3_{source}")
+        script = Script(self.hass, cv.SCRIPT_SCHEMA(automation["actions"]), f"test_{source}", "test")
+        await script.async_run({"trigger": {"id": "periodic", "platform": "time_pattern"}}, context=Context())
+        await self.hass.async_block_till_done()
+        return self.results[-1]
 
     def set(self, entity, state, attrs=None):
         self.hass.states.async_set(entity, state, attrs or {})
@@ -47,12 +88,14 @@ class Rig:
         return self.hass.states.get(entity).state
 
     async def call(self, script, **data):
-        return await self.hass.services.async_call(
+        result = await self.hass.services.async_call(
             "script", f"energy_v3_{script}", data, blocking=True, return_response=True
         )
+        await self.hass.async_block_till_done()
+        return result
 
     async def submit(self, mode="SELF_USE", power=None, **overrides):
-        now = datetime.now(UTC)
+        now = self.now()
         data = dict(
             mode=mode,
             power_w=(0 if mode in ZERO_MODES else 2400) if power is None else power,
@@ -95,7 +138,12 @@ class Rig:
             deye_charge_current_a=100,
             deye_discharge_current_a=100,
             deye_watchdog_s=30,
+            deye_refresh_verified=True,
+            deye_refresh_via="watchdog",
+            deye_renew_before_s=10,
             solax_timeout_s=0,
+            solax_refresh_verified=True,
+            solax_renew_before_s=10,
             solax_pv_limit_w=12000,
             pv_auto_verified=True,
             pv_auto_work_mode="Zero Export To CT",
@@ -115,7 +163,17 @@ class Rig:
             self.sample(entity, value)
 
     def sample(self, entity, value, age=0):
-        self.set(entity, str(value), {"sampled_at": (datetime.now(UTC) - timedelta(seconds=age)).isoformat()})
+        self.set(entity, str(value), {"sampled_at": (self.now() - timedelta(seconds=age)).isoformat()})
+
+    def fresh_samples(self):
+        for entity in (
+            "sensor.deye_external_power",
+            "sensor.solax_battery_capacity",
+            "sensor.deye_battery",
+            "sensor.solax_battery_power_charge",
+            "sensor.deye_battery_power",
+        ):
+            self.sample(entity, self.state(entity))
 
     def profile(self, cfg=None, **updates):
         cfg = dict(cfg or self.hass.states.get("sensor.energy_v3_configuration").attributes["profile"])
@@ -176,13 +234,18 @@ def test_all_49_proposed_transitions_keep_break_before_make(run):
         await rig.commissioned()
         for previous in MODES:
             for target in MODES:
-                rig.set("input_select.energy_v3_preview_mode", previous)
+                rig.applied(previous)
                 result = await rig.submit(target)
                 assert result["reason"] == "ok", result
                 assert result["previous_preview_mode"] == previous
                 assert result["preview_mode"] == target
                 assert result["hardware_confirmed"] is False
                 plan = result["plan"]
+                if previous == target:
+                    assert result["change"] == "check"
+                    assert plan == []
+                    continue
+                assert result["change"] == "transition"
                 barriers = [s.get("barrier") for s in plan]
                 assert barriers.index("confirm_native_hold") < barriers.index("confirm_vpp_disabled_and_battery_idle")
                 stop = barriers.index("confirm_native_self_use")
@@ -381,14 +444,15 @@ def test_real_restart_restores_watermark_but_cancels_request(run):
     saved = {}
 
     async def first(rig):
-        await rig.submit()
+        await rig.commissioned()
+        assert (await rig.submit("DEYE_SELL"))["preview_mode"] == "DEYE_SELL"
         saved.update(json.loads(rig.state("input_text.energy_v3_command")))
 
     async def second(rig):
         restored = json.loads(rig.state("input_text.energy_v3_command"))
         assert restored == dict(saved, x=True)
         assert rig.state("input_boolean.energy_v3_enabled") == "off"
-        assert rig.state("input_select.energy_v3_preview_mode") == "SAFE"
+        assert json.loads(rig.state("input_text.energy_v3_applied"))["m"] == "SAFE"
         assert (await rig.call("reconcile"))["reason"] == "disabled"
 
     run(first, automations=True)
@@ -402,6 +466,220 @@ def test_corrupt_watermark_never_silently_resets_replay_protection(run, corrupt)
         result = await rig.submit()
         assert result["reason"] == "corrupt_watermark"
         assert rig.state("input_text.energy_v3_command") == corrupt
+
+    run(scenario)
+
+
+@pytest.mark.parametrize("mode", ["SOLAX_SELL", "SOLAX_AC_CHARGE", "DEYE_SELL", "DEYE_AC_CHARGE"])
+def test_periodic_checks_and_new_ids_do_not_restart_or_prolong_hw_lease(run, mode):
+    async def scenario(rig):
+        with rig.at(0):
+            await rig.commissioned()
+            first = await rig.submit(mode)
+            assert first["change"] == "transition"
+            original = rig.state("input_text.energy_v3_applied")
+            # Actual readbacks remain separate from the simulated operation.
+            rig.set("sensor.solax_modbus_power_control", "Disabled")
+            rig.set("select.deye_remote_mode", "Disabled")
+        for offset, source in [(5, "safety"), (10, "supervisor"), (15, "safety")]:
+            with rig.at(offset):
+                rig.fresh_samples()
+                before = len(rig.calls)
+                result = await rig.tick(source)
+                assert result["change"] == "check"
+                assert result["plan"] == []
+                assert rig.state("input_text.energy_v3_applied") == original
+                assert not any(
+                    c["domain"] in {"input_text", "input_select", "input_boolean"} for c in rig.calls[before:]
+                )
+                assert result["hw_readback"]["solax_vpp"] == "Disabled"
+                assert result["hw_readback"]["deye_remote_observed"] == "Disabled"
+                assert result["hardware_confirmed"] is False
+        with rig.at(16):
+            rig.fresh_samples()
+            continuation = await rig.submit(mode)
+            assert continuation["change"] == "check"
+            assert continuation["plan"] == []
+            assert rig.state("input_text.energy_v3_applied") == original
+            request = json.loads(rig.state("input_text.energy_v3_command"))
+            assert request["e"] > first["simulated_applied"]["u"]
+
+    run(scenario)
+
+
+@pytest.mark.parametrize("mode", ["SOLAX_SELL", "SOLAX_AC_CHARGE", "DEYE_SELL", "DEYE_AC_CHARGE"])
+def test_same_mode_power_update_is_one_setpoint_without_stop_start(run, mode):
+    async def scenario(rig):
+        with rig.at(0):
+            await rig.commissioned()
+            first = await rig.submit(mode)
+        with rig.at(1):
+            rig.fresh_samples()
+            result = await rig.submit(mode, power=3600)
+            assert result["change"] == "setpoint"
+            commands = [step for step in result["plan"] if "entity" in step]
+            expected = (
+                "number.solax_remotecontrol_push_mode_power_8_9_direct"
+                if mode.startswith("SOLAX_")
+                else "number.deye_remote_constant_power_setpoint"
+            )
+            assert [s["entity"] for s in commands] == [expected]
+            assert result["simulated_applied"]["p"] == 3600
+            if mode.startswith("DEYE_"):
+                # This fixture verifies watchdog-register refresh, not a setpoint heartbeat.
+                assert result["simulated_applied"]["u"] == first["simulated_applied"]["u"]
+        with rig.at(2):
+            rig.fresh_samples()
+            # Different raw requests with the same effective hardware quantum are no-ops.
+            equivalent = await rig.submit(mode, power=3601)
+            assert equivalent["change"] == "check"
+            assert equivalent["plan"] == []
+
+    run(scenario)
+
+
+@pytest.mark.parametrize("mode", ["SOLAX_SELL", "SOLAX_AC_CHARGE", "DEYE_SELL", "DEYE_AC_CHARGE"])
+def test_only_due_verified_refresh_renews_once_without_a_transition(run, mode):
+    async def scenario(rig):
+        with rig.at(0):
+            await rig.commissioned()
+            first = await rig.submit(mode)
+            due = 50 if mode.startswith("SOLAX_") else 20
+        with rig.at(due):
+            rig.fresh_samples()
+            result = await rig.tick("supervisor")
+            assert result["change"] == "renew"
+            assert len([s for s in result["plan"] if "entity" in s]) == 1
+            assert result["simulated_applied"]["u"] > first["simulated_applied"]["u"]
+            assert not any(s.get("value") == "Disabled" for s in result["plan"])
+            assert not any("battery_max_" in s.get("entity", "") for s in result["plan"])
+            assert result["simulated_applied"]["u"] <= json.loads(rig.state("input_text.energy_v3_command"))["e"]
+            repeat = await rig.tick("safety")
+            assert repeat["change"] == "check"
+            assert repeat["plan"] == []
+
+    run(scenario)
+
+
+@pytest.mark.parametrize("mode", ["SOLAX_SELL", "DEYE_SELL"])
+def test_lease_extension_allows_due_refresh_but_not_a_stop_start(run, mode):
+    async def scenario(rig):
+        with rig.at(0):
+            await rig.commissioned()
+            await rig.submit(mode)
+            due = 50 if mode.startswith("SOLAX_") else 20
+        with rig.at(due):
+            rig.fresh_samples()
+            # The new optimizer lease permits a due renewal; ID is not a transition key.
+            result = await rig.submit(mode)
+            assert result["change"] == "renew"
+            assert not any(s.get("value") == "Disabled" for s in result["plan"])
+            repeated = await rig.tick("safety")
+            assert repeated["change"] == "check"
+            assert repeated["plan"] == []
+
+    run(scenario)
+
+
+@pytest.mark.parametrize("failure", ["expiry", "fault", "disabled"])
+def test_safe_exit_is_planned_once_and_then_only_checked(run, failure):
+    async def scenario(rig):
+        with rig.at(0):
+            await rig.commissioned()
+            await rig.submit("DEYE_SELL")
+        with rig.at(1):
+            rig.fresh_samples()
+            if failure == "expiry":
+                record = json.loads(rig.state("input_text.energy_v3_command"))
+                record.update(t=rig.now().timestamp() - 121, e=rig.now().timestamp() - 1)
+                rig.set("input_text.energy_v3_command", json.dumps(record))
+            elif failure == "disabled":
+                rig.set("input_boolean.energy_v3_enabled", "off")
+            else:
+                rig.set("sensor.deye_device_fault", "FAULT")
+            result = await rig.tick("supervisor")
+            assert result["change"] == "transition"
+            assert result["preview_mode"] == "SAFE"
+            assert any(s.get("value") == "Disabled" for s in result["plan"])
+            for source in ("safety", "supervisor", "safety"):
+                repeated = await rig.tick(source)
+                assert repeated["change"] == "check"
+                assert repeated["plan"] == []
+                assert repeated["simulated_applied"]["m"] == "SAFE"
+
+    run(scenario)
+
+
+@pytest.mark.parametrize("unverified", [True, False])
+def test_refresh_needs_verified_profile_and_cannot_outlive_optimizer_lease(run, unverified):
+    async def scenario(rig):
+        with rig.at(0):
+            await rig.commissioned()
+            rig.profile(deye_refresh_verified=not unverified)
+            await rig.submit("DEYE_SELL", valid_until=(rig.now() + timedelta(seconds=40)).isoformat())
+        with rig.at(20):
+            rig.fresh_samples()
+            result = await rig.tick("safety")
+            assert result["change"] == "check"
+            assert result["plan"] == []
+            assert result["reason"] == ("renewal_unverified" if unverified else "renewal_waiting_for_longer_lease")
+        with rig.at(30):
+            rig.fresh_samples()
+            result = await rig.tick("supervisor")
+            assert result["reason"] == "simulated_hw_lease_elapsed"
+            assert result["change"] == "transition"
+            assert result["preview_mode"] == "SAFE"
+            assert (await rig.tick("safety"))["plan"] == []
+
+    run(scenario)
+
+
+@pytest.mark.parametrize("via", ["watchdog", "setpoint"])
+def test_due_deye_power_change_combines_only_required_setpoint_and_refresh(run, via):
+    async def scenario(rig):
+        with rig.at(0):
+            await rig.commissioned()
+            rig.profile(deye_refresh_via=via)
+            first = await rig.submit("DEYE_SELL")
+        with rig.at(20):
+            rig.fresh_samples()
+            result = await rig.submit("DEYE_SELL", power=3600)
+            assert result["change"] == "setpoint"
+            assert result["renewal_prepared"] is True
+            commands = [s["entity"] for s in result["plan"] if "entity" in s]
+            expected = ["number.deye_remote_constant_power_setpoint"]
+            if via == "watchdog":
+                expected.append("number.deye_remote_watchdog")
+            assert commands == expected
+            assert result["simulated_applied"]["u"] > first["simulated_applied"]["u"]
+            assert (await rig.tick("safety"))["plan"] == []
+
+    run(scenario)
+
+
+def test_shortened_lease_stops_once_and_elapsed_command_cannot_be_revived_by_a_new_id(run):
+    async def scenario(rig):
+        with rig.at(0):
+            await rig.commissioned()
+            await rig.submit("DEYE_SELL")
+        with rig.at(1):
+            rig.fresh_samples()
+            shorter = await rig.submit("DEYE_SELL", valid_until=(rig.now() + timedelta(seconds=10)).isoformat())
+            assert shorter["reason"] == "shortened_lease"
+            assert shorter["change"] == "transition"
+            assert shorter["preview_mode"] == "SAFE"
+            assert (await rig.tick("safety"))["plan"] == []
+        with rig.at(2):
+            rig.fresh_samples()
+            rig.set("input_boolean.energy_v3_fault", "off")
+            await rig.submit("DEYE_SELL")
+        with rig.at(33):
+            rig.fresh_samples()
+            fresh_id = await rig.submit("DEYE_SELL")
+            assert fresh_id["reason"] == "simulated_hw_lease_elapsed"
+            assert fresh_id["preview_mode"] == "SAFE"
+            assert not any(s.get("value") == "Remote mode 3" for s in fresh_id["plan"])
+            assert (await rig.tick("supervisor"))["plan"] == []
 
     run(scenario)
 

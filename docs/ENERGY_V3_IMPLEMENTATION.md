@@ -18,7 +18,7 @@ Externí automatizace nesmí být na tuto událost připojena jako transport.
 ## Implementované chování
 
 - **Submit:** jeden sériový vstup optimalizátoru, validace všech polí, konečný TTL do 120 s, explicitní časové pásmo, numerický konečný výkon, idempotence bez prodloužení a zákaz starších požadavků.
-- **Reconcile:** sériová logika všech sedmi režimů; sestaví HOLD Deye → SolaX STOP → požadovanou operaci. Potvrzení konce SolaXu je vždy před plánem uvolnění Deye.
+- **Reconcile:** sériová logika sedmi režimů rozlišuje `transition`, `check`, `setpoint` a `renew`. Plný HOLD Deye → SolaX STOP → nová operace vznikne pouze při změně režimu. Potvrzení konce SolaXu je vždy před plánem uvolnění Deye.
 - **Supervisor:** start, změna profilu/enabled/topology a 20s kontrola. Po startu zruší požadavek, zachová replay watermark a vypne simulaci.
 - **Safety:** události zdravotního stavu a 5s kontrola platnosti přes stejný reconcile. Neexistuje druhá zapisující větev.
 - **Blokace:** current topology, neověřená asymetrie/nativní export/remote/VPP/SOC/komunikace, neznámá polarita, chybějící nebo zastaralé fyzické vzorky, chybný stav zařízení, směrové SOC rezervy, výkon a nedostatečná zbývající HW lease.
@@ -76,24 +76,55 @@ Výchozí hodnoty jsou `false`, `null` nebo prázdné seznamy. **Nejsou to před
 Příznak `communication_verified` znamená, že časový atribut skutečně dokládá fyzický vzorek; `last_changed/last_updated` zde nejsou použity jako jeho náhrada.
 Testy používají smyšlený `sampled_at` a `TEST_NORMAL`, ne návrh existujících produkčních atributů.
 
-Šest helperů je nezbytných pro preview: enabled, topology_verified, fault, topology, preview_mode a jeden kompaktní command.
-`sensor.energy_v3_request` ukazuje požadavek; `input_select.energy_v3_preview_mode` pouze simulovaný režim.
+Šest helperů je nezbytných pro preview: enabled, topology_verified, fault, topology a dva kompaktní záznamy command/applied.
+`input_text.energy_v3_applied` nahrazuje původní `input_select.energy_v3_preview_mode`; atomicky obsahuje `m` (simulovaný režim), `p` (kvantovaný BAT cíl ve W) a `u` (simulovaný konec krátkého příkazu, UNIX čas).
+Applied se při startu resetuje na UNKNOWN/0/0, neobnovuje se z historie. Reconcile čte přímo tento záznam, nikoli opožděnou diagnostickou událost.
+`sensor.energy_v3_request` ukazuje požadavek; odvozený `sensor.energy_v3_preview_mode` pouze simulovaný aplikovaný režim.
 `sensor.energy_v3_status` je vždy **DISABLED**. V atributech má poslední rozhodnutí, důvod fault, pořadí plánu, `executed=false` a `hardware_confirmed=false`.
 Žádný simulovaný HOLD nebo SAFE není prezentován jako fyzicky dosažený stav.
+
+## Opakované kontroly, setpoint a obnova
+
+| Situace | Výstup reconcile |
+|---|---|
+| Jiný režim včetně odchodu do SAFE | `transition`: plná bezpečná sekvence, poté jednorázové uložení simulovaného výsledku |
+| Stejný režim a stejný kvantovaný výkon | `check`: prázdný plán, žádné volání adaptérů ani přepis applied |
+| Stejný režim, jiný kvantovaný výkon | `setpoint`: pouze cílové number a potvrzovací bariéry; žádný HOLD, Disabled, TOU ani opětovná aktivace režimu |
+| Stejná operace, nové command_id/valid_until | Aktualizuje se pouze request; ID není klíč přechodu a samo neposouvá `u` |
+| Krátký příkaz potřebuje obnovit | `renew`: pouze ověřený refresh, pokud dosud nevypršel, nastal ověřený předstih a celý nový interval se vejde do optimizer lease |
+| Expirace, ztráta zdraví nebo fault | Jednou přechod na simulované SAFE; další tiky pouze kontrolují. Skutečné HW dosažení SAFE není potvrzeno |
+
+Nové `solax/deye_refresh_verified` a `solax/deye_renew_before_s` jsou výchozí false/null.
+Deye navíc vyžaduje potvrzené `deye_refresh_via=watchdog|setpoint`: 1101 status sám nepotvrzuje, jaký zápis skutečně obnoví watchdog.
+Předstih musí být kladný, menší než délka příkazu a musí být provozně ověřen; testovací hodnoty nejsou produkční doporučení.
+SolaX obnovovací plán znovu odešle direct mode 8 (jeden celý blok integrace), bez Disabled nebo přípravy všech parametrů.
+Deye obnoví pouze zvolený ověřený registr; režim, proudové limity a AC coupling nepřepíná.
+
+Změna SolaX direct setpointu sama posílá celý blok. Simulovaný čas se při ní prodlouží pouze s ověřenou refresh sémantikou.
+U Deye s refresh přes 1101 samotná změna 1109 neposouvá `u`; pokud je současně skutečně nutná obnova, plán obsahuje setpoint a samostatný watchdog refresh.
+Změna raw požadavku uvnitř stejného HW kvanta nevytváří zápis setpointu.
+Pokud optimizer lease na celý další interval nestačí, `check` s důvodem `renewal_waiting_for_longer_lease` neobnovuje příkaz. Pozdější prodloužení může povolit obnovu bez STOP/START.
+Při dosažení `u` bez obnovy nebo zkrácení optimizer lease pod již naplánovaný interval vznikne jednorázový SAFE a fault; expirovaná HW operace se potichu znovu nespouští.
+
+`simulated_applied` a `change` jsou součástí diagnostiky. `hw_readback` zveřejňuje zvlášť SolaX HW VPP senzor, pozorovanou Deye remote select hodnotu a oba bateriové výkony.
+Deye select je pouze pozorování, nemusí být nezávislým HW potvrzením. Žádný z těchto údajů se nepřepisuje simulovaným režimem.
+Obnovovací potřeba je zde **simulovaná** podle `u`, nikoli změřený HW odpočet. `hardware_confirmed=false` a `actual_mode=DISABLED` zůstávají vždy.
+Budoucí transport musí místo úspěšného vytvoření plánu použít skutečné potvrzení zápisu a přečteného stavu; samotné připojení service call k plánu není autorizace fyzického provozu.
+Konfigurační profil během operace neměnit; nejprve disabled/SAFE, potom úprava a nové ověření profilu.
 
 ## Co je pouze připravené
 
 | Část | Připraveno | Záměrně neimplementováno |
 |---|---|---|
 | Deye HOLD | Nulový cíl, oba proudy 0, potvrzovací bariéry, remote off | Zápisy, měření skutečné blokace, reboot/persistence akceptace |
-| Deye obchod | 1104 Battery-side, 1105 Power, 1109 procenta, 1100 profil, 1101 watchdog a směrové proudy | Přenos, heartbeat a určení zápisu obnovujícího watchdog; 1110 není domnělá SOC ochrana |
+| Deye obchod | 1104 Battery-side, 1105 Power, 1109 procenta, 1100 profil, 1101 watchdog, směrové proudy a oddělené setpoint/refresh plány | Přenos a fyzické potvrzení obnovovacího registru; 1110 není domnělá SOC ochrana |
 | PV_AUTO | Kandidátní celý nativní profil včetně TOU, AC coupling Grid, zákaz běžného Grid Charge a vybíjení | Potvrzení optimálního profilu v instalaci a práce s jeho fyzickým fallbackem |
 | SolaX | Direct mode 8, příprava parametrů při VPP off, aktivace poslední, BAT target a Disabled | Fyzické FC16, readback/timeout/restart test, obnova krátkého příkazu za běhu |
 | Interlocky | Logická výlučnost a správné pořadí bariér všech přechodů | Vykonávání/čekání na skutečné HW potvrzení, rollback reálného selhání |
 | Nativní limity | Commissioning gate a PCC alarm | Důkaz Max Sell Power = celý PCC při Remote Mode, další HA regulátor |
 
 Návrh SolaX příkazu vznikne jen při dostatečné zbývající době pro duration 60 s + potvrzený timeout; Deye analogicky pro watchdog.
-To je preview kontrola, nikoli potvrzení jeho skutečné časové sémantiky. Žádný periodický tick zde neobnovuje HW příkaz.
+To je preview kontrola, nikoli potvrzení jeho skutečné časové sémantiky. Periodický tick může připravit jen potřebnou a ověřeným profilem povolenou simulovanou obnovu; žádný HW příkaz neodesílá.
 Před budoucím přidáním transportu bude nutné znovu zkontrolovat délku zbývající lease přímo před aktivací a všechny bariéry fyzicky splnit.
 Samotné přidání `number.set_value` do dnešního plánu není schválený způsob zprovoznění.
 
@@ -115,7 +146,8 @@ Nevytvářejí druhou implementaci řídicí logiky v Pythonu. Kontrolují i sku
 Scénáře: všech 7×7 přechodů, nuly Deye před SolaX VPP, konec VPP před uvolněním proudů,
 vstupní typy/NaN/Inf/rozsahy/časová pásma, replay/idempotence/konflikt, default off,
 current/neověřená asymetrie, SOC floor/ceiling, výpadek zařízení, chybějící/stará PCC data,
-exportní alarm, expiry a krátká lease, restart bez replay, žádný fyzický service call.
+exportní alarm, expiry a krátká lease, restart bez replay, opakované tiky supervisor/safety bez přechodu,
+změny setpointu a kvantování, nová ID/prodloužení lease, potřebné a zakázané obnovy, jednorázový SAFE po fault/expiry a žádný fyzický service call.
 
 **Provozní ověření nadále čeká** na body T1–T11 návrhu: polarita a hranice PCC, spolupráce nativních limitů v Remote/VPP,
 celodoby HOLD včetně timeoutů a restartů, skutečné SOC/BMS limity, fyzická čerstvost/latence, writer inventory a smluvní 15min výpočet.
